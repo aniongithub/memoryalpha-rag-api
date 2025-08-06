@@ -1,0 +1,9 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.0
+chromadb==1.0.15
+pysqlite3-binary==0.5.4
+requests==2.31.0
+prompt_toolkit==3.0.51
+sentence-transformers==5.0.0
+fastapi==0.116.1
+uvicorn==0.35.0

@@ -1,0 +1,35 @@
+version: "3.9"
+
+services:
+  ollama:
+    build:
+      context: ./ollama
+      dockerfile: ollama.Dockerfile
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - odn
+    env_file:
+      - .env
+
+  lcars:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - ollama
+    volumes:
+      - .:/workspace/memoryalpha-rag-api
+    ports:
+      - "8000:8000"  # for REST API
+    networks:
+      - odn
+    env_file:
+      - .env
+
+volumes:
+  ollama_data:
+
+networks:
+  odn:
+    driver: bridge

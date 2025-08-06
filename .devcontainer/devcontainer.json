@@ -1,0 +1,38 @@
+{
+	"name": "Memoryalpha RAG API",
+	"dockerComposeFile": "../docker-compose.yml",
+	"service": "lcars",
+	"overrideCommand": true,
+	"remoteUser": "vscode",
+	"postAttachCommand": "/workspace/memoryalpha-rag-api/wait-for-ollama.sh",
+	"features": {
+		"ghcr.io/nils-geistmann/devcontainers-features/create-remote-user:0": {
+			"passwordLessSudo": true
+		}
+	},
+	"customizations": {
+        "vscode": {
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash"
+			},
+			"extensions": [
+				"ms-python.python",
+				"zaaack.markdown-editor",
+				"bierner.emojisense",
+				"ms-python.debugpy"
+			]
+        }
+    },
+	"workspaceFolder": "/workspace/memoryalpha-rag-api",
+	"forwardPorts": [
+		8000
+	],
+
+	"portsAttributes": {
+		"8000": {
+			"label": "Memoryalpha RAG REST API",
+			"onAutoForward": "ignore",
+			"requireLocalPort": false
+		}
+	}
+}

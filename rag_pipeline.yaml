@@ -1,0 +1,14 @@
+document_search:
+  type: api.memoryalpha.rag.ChromaDBDocumentSearch
+  args:
+    path: ${DB_PATH}
+    collection_name: ${COLLECTION_NAME}
+reranker:
+  type: api.memoryalpha.rag.CrossEncoderReranker
+prompt_generator:
+  type: api.memoryalpha.rag.VicunaPromptGenerator
+  args:
+    system_prompt: |
+      You are a helpful assistant. Use only the context below to answer the question.
+      If you cannot reason through the answer, answer that not enough information is
+      available to answer the question. Keep answers short and factual.
