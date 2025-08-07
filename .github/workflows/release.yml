@@ -67,4 +67,4 @@ jobs:
       with:
         files: memoryalpha-rag-api-spec.json
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.MEMORYALPHA_RAG_API_MODIFY_RELEASE_TOKEN }}
