@@ -17,7 +17,7 @@ jobs:
       
     - name: Build with Docker Compose
       run: |
-        docker-compose build
+        docker compose build
         
     - name: Verify builds completed
       run: |
@@ -27,7 +27,7 @@ jobs:
     - name: Test health endpoint readiness
       run: |
         # Start services in background
-        docker-compose up -d
+        docker compose up -d
         
         # Wait for services to be ready (max 5 minutes)
         timeout 300 bash -c 'until curl -f http://localhost:8000/memoryalpha/health > /dev/null 2>&1; do sleep 5; echo "Waiting for API..."; done'
@@ -54,5 +54,5 @@ jobs:
     - name: Cleanup
       if: always()
       run: |
-        docker-compose down -v
+        docker compose down -v
         docker system prune -f
