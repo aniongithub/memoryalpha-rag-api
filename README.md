@@ -2,7 +2,7 @@
 
 A REST API for Retrieval-Augmented Generation (RAG) over Star Trek's MemoryAlpha database using Ollama and FastAPI.
 
-[![CI](https://github.com/aniongithub/memoryalpha-rag-api/actions/workflows/ci.yml/badge.svg)](https://github.com/aniongithub/memoryalpha-rag-api/actions/workflows/ci-build.yml)
+[![CI Build](https://github.com/aniongithub/memoryalpha-rag-api/actions/workflows/ci-build.yml/badge.svg)](https://github.com/aniongithub/memoryalpha-rag-api/actions/workflows/ci-build.yml)
 
 ## Overview
 
