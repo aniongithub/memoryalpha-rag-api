@@ -59,12 +59,12 @@ jobs:
         # Wait for API to be ready
         timeout 120 bash -c 'until curl -f http://localhost:8000/memoryalpha/health > /dev/null 2>&1; do sleep 5; echo "Waiting for API..."; done'
         # Download OpenAPI spec
-        curl -s http://localhost:8000/openapi.json -o openapi.json
+        curl -s http://localhost:8000/openapi.json -o memoryalpha-rag-api-spec.json
         docker compose down -v
 
     - name: Upload OpenAPI spec to release
       uses: softprops/action-gh-release@v2
       with:
-        files: openapi.json
+        files: memoryalpha-rag-api-spec.json
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
