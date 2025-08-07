@@ -50,6 +50,12 @@ jobs:
           echo "Response: $response"
           exit 1
         fi
+
+    - name: Generate OpenAPI spec
+      run: |
+        # Download OpenAPI spec
+        curl -s http://localhost:8000/openapi.json -o memoryalpha-rag-api-spec.json
+        cat memoryalpha-rag-api-spec.json
         
     - name: Cleanup
       if: always()
