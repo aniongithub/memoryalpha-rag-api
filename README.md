@@ -2,6 +2,8 @@
 
 A REST API for Retrieval-Augmented Generation (RAG) over Star Trek's MemoryAlpha database using Ollama and FastAPI.
 
+[![CI](https://github.com/aniongithub/memoryalpha-rag-api/actions/workflows/ci.yml/badge.svg)](https://github.com/aniongithub/memoryalpha-rag-api/actions/workflows/ci-build.yml)
+
 ## Overview
 
 This project provides a streaming REST API that enables natural language queries over the comprehensive Star Trek MemoryAlpha database. It uses the vectorized database from [memoryalpha-vectordb](https://github.com/aniongithub/memoryalpha-vectordb) and combines it with local LLMs via Ollama to provide accurate, context-aware responses about Star Trek lore.
@@ -47,7 +49,7 @@ The system implements:
    - "How does warp drive work?"
    - "What happened in the Dominion War?"
 
-     ![](assets/20250806_232014_Peek_2025-08-06 23-18.gif)
+     ![](assets/20250806_232014_chat.gif)
 
 ### API Endpoints
 
