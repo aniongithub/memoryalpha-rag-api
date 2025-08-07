@@ -74,6 +74,8 @@ def stream_endpoint(
             prompt_duration = time.time() - prompt_start
 
             full_response = ""
+            current_buffer = ""
+            in_thinking_block = False
             
             # Phase 3: LLM generation
             generation_start = time.time()
@@ -89,14 +91,44 @@ def stream_endpoint(
                 if 'message' in chunk and 'content' in chunk['message']:
                     content = chunk['message']['content']
                     full_response += content
+                    current_buffer += content
                     
                     # Track time to first token
                     if first_token_time is None and content:
                         first_token_time = time.time() - generation_start
                     
-                    # Send chunk as JSON
-                    chunk_data = {"chunk": content}
-                    yield f"data: {json.dumps(chunk_data)}\n\n"
+                    # Process content based on thinking mode
+                    if rag.thinking_mode == ThinkingMode.DISABLED:
+                        # Filter out thinking blocks in real-time
+                        output_content = ""
+                        i = 0
+                        while i < len(current_buffer):
+                            if current_buffer[i:].startswith("<think>") and not in_thinking_block:
+                                in_thinking_block = True
+                                i += 7  # Skip "<think>"
+                            elif current_buffer[i:].startswith("</think>") and in_thinking_block:
+                                in_thinking_block = False
+                                i += 8  # Skip "</think>"
+                                current_buffer = current_buffer[i:]
+                                i = 0
+                            elif not in_thinking_block:
+                                output_content += current_buffer[i]
+                                i += 1
+                            else:
+                                i += 1
+                        
+                        # Only update buffer with remaining unprocessed content
+                        if not in_thinking_block:
+                            current_buffer = ""
+                        
+                        # Send filtered content
+                        if output_content:
+                            chunk_data = {"chunk": output_content}
+                            yield f"data: {json.dumps(chunk_data)}\n\n"
+                    else:
+                        # For other modes, send content as-is
+                        chunk_data = {"chunk": content}
+                        yield f"data: {json.dumps(chunk_data)}\n\n"
             
             generation_duration = time.time() - generation_start
             
