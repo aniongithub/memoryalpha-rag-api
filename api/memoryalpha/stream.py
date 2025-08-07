@@ -3,13 +3,23 @@ from fastapi.responses import StreamingResponse
 import json
 import re
 import time
+import logging
 
 from .rag import MemoryAlphaRAG, ThinkingMode
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
-# Singleton or global instance for demo; in production, manage lifecycle properly
-rag_instance = MemoryAlphaRAG()
+# Lazy-loaded singleton
+rag_instance = None
+
+def get_rag_instance():
+    global rag_instance
+    if rag_instance is None:
+        logger.info("Initializing MemoryAlpha RAG instance...")
+        rag_instance = MemoryAlphaRAG()
+        logger.info("MemoryAlpha RAG instance initialized successfully")
+    return rag_instance
 
 @router.get("/memoryalpha/rag/stream")
 def stream_endpoint(
@@ -28,17 +38,20 @@ def stream_endpoint(
         try:
             start_time = time.time()
             
+            # Get RAG instance (lazy-loaded)
+            rag = get_rag_instance()
+            
             # Set the thinking mode for this request
-            rag_instance.thinking_mode = ThinkingMode[thinkingmode.upper()]
+            rag.thinking_mode = ThinkingMode[thinkingmode.upper()]
             
             # Phase 1: Document retrieval
             search_start = time.time()
-            docs = rag_instance.search(question, top_k=top_k)
+            docs = rag.search(question, top_k=top_k)
             search_duration = time.time() - search_start
             
             # Phase 2: Prompt building
             prompt_start = time.time()
-            system_prompt, user_prompt = rag_instance.build_prompt(question, docs)
+            system_prompt, user_prompt = rag.build_prompt(question, docs)
             
             # Build messages for chat
             messages = [
@@ -46,7 +59,7 @@ def stream_endpoint(
             ]
             
             # Add conversation history
-            for exchange in rag_instance.conversation_history[-3:]:  # Last 3 exchanges
+            for exchange in rag.conversation_history[-3:]:  # Last 3 exchanges
                 messages.append({"role": "user", "content": exchange["question"]})
                 messages.append({"role": "assistant", "content": exchange["answer"]})
             
@@ -67,8 +80,8 @@ def stream_endpoint(
             first_token_time = None
             
             # Stream the response
-            for chunk in rag_instance.ollama_client.chat(
-                model=rag_instance.model,
+            for chunk in rag.ollama_client.chat(
+                model=rag.model,
                 messages=messages,
                 stream=True,
                 options={"temperature": temperature, "top_p": top_p, "num_predict": max_tokens}
@@ -92,15 +105,15 @@ def stream_endpoint(
             output_tokens = len(full_response.split()) * 1.3  # Rough token estimate
             
             # Process final response based on thinking mode
-            if rag_instance.thinking_mode == ThinkingMode.DISABLED:
-                final_response = rag_instance._clean_response(full_response)
-            elif rag_instance.thinking_mode == ThinkingMode.QUIET:
-                final_response = rag_instance._replace_thinking_tags(full_response)
+            if rag.thinking_mode == ThinkingMode.DISABLED:
+                final_response = rag._clean_response(full_response)
+            elif rag.thinking_mode == ThinkingMode.QUIET:
+                final_response = rag._replace_thinking_tags(full_response)
             else:  # VERBOSE
                 final_response = full_response.strip()
             
             # Update history with final processed response
-            rag_instance._update_history(question, final_response)
+            rag._update_history(question, final_response)
             processing_duration = time.time() - processing_start
             
             # Calculate total duration
@@ -122,7 +135,7 @@ def stream_endpoint(
                     "output_tokens_estimated": int(output_tokens),
                     "total_tokens_estimated": int(input_tokens + output_tokens),
                     "documents_retrieved": len(docs),
-                    "model": rag_instance.model
+                    "model": rag.model
                 }
             }
             yield f"data: {json.dumps(metrics)}\n\n"

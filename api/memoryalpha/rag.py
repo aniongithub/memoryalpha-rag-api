@@ -99,11 +99,17 @@ class MemoryAlphaRAG:
 
         if rerank_method == "cross-encoder":
             try:
+                logger.info("Loading cross-encoder model BAAI/bge-reranker-v2-m3...")
                 self.cross_encoder = CrossEncoder('BAAI/bge-reranker-v2-m3')
+                logger.info("Cross-encoder model loaded successfully")
             except Exception:
+                logger.info("Loading fallback cross-encoder model BAAI/bge-reranker-base...")
                 self.cross_encoder = CrossEncoder('BAAI/bge-reranker-base')
+                logger.info("Fallback cross-encoder model loaded successfully")
         elif rerank_method == "cosine":
+            logger.info("Loading embedding model all-MiniLM-L6-v2...")
             self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+            logger.info("Embedding model loaded successfully")
 
         self.client = chromadb.PersistentClient(
             path=self.chroma_db_path,

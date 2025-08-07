@@ -14,3 +14,10 @@ RUN wget https://github.com/aniongithub/memoryalpha-vectordb/releases/latest/dow
     tar -xzf enmemoryalpha_db.tar.gz &&\
     rm enmemoryalpha_db.tar.gz &&\
     chmod -R 0777 /data
+
+FROM devcontainer AS runtime
+
+WORKDIR /workspace/memoryalpha-rag-api
+COPY . /workspace/memoryalpha-rag-api
+
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]

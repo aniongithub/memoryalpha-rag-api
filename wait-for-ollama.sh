@@ -1,4 +1,3 @@
-# wait-for-ollama.sh
 #!/bin/bash
 echo "✋ Waiting for Ollama at $OLLAMA_URL..."
 
@@ -19,9 +18,9 @@ else
   echo "✅ Model '$DEFAULT_MODEL' has been pulled successfully."
 fi
 
-exec "$@"
-
 # Warm up ollama with the default model
 echo "🤖 Warming up Ollama with $DEFAULT_MODEL..."
 curl -s "$OLLAMA_URL/api/generate" -X POST -H "Content-Type: application/json" -d "{\"model\":\"$DEFAULT_MODEL\", \"prompt\":\"Hello, Ollama!\"}" > /dev/null
 echo "✅ Ollama is warmed up."
+
+exec "$@"
