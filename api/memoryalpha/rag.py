@@ -63,7 +63,6 @@ class MemoryAlphaRAG:
     def __init__(self,
                  chroma_db_path: str = os.getenv("DB_PATH"),
                  ollama_url: str = os.getenv("OLLAMA_URL"),
-                 model: str = os.getenv("DEFAULT_MODEL"),
                  collection_name: str = os.getenv("COLLECTION_NAME", "memoryalpha"),
                  rerank_method: str = "cross-encoder",
                  thinking_mode: ThinkingMode = ThinkingMode.DISABLED,
@@ -75,14 +74,11 @@ class MemoryAlphaRAG:
             raise ValueError("chroma_db_path must be provided or set in CHROMA_DB_PATH environment variable.")
         if not ollama_url:
             raise ValueError("ollama_url must be provided or set in OLLAMA_URL environment variable.")
-        if not model:
-            raise ValueError("model must be provided or set in DEFAULT_MODEL environment variable.")
         if not collection_name:
             raise ValueError("collection_name must be provided or set in COLLECTION_NAME environment variable.")
 
         self.chroma_db_path = chroma_db_path
         self.ollama_url = ollama_url
-        self.model = model
         self.collection_name = collection_name
         self.thinking_mode = thinking_mode
         self.enable_streaming = enable_streaming
@@ -142,19 +138,6 @@ class MemoryAlphaRAG:
         # Initialize Ollama client
         self.ollama_client = ollama.Client(host=self.ollama_url)
 
-        self._warm_up_model()
-
-    def _warm_up_model(self):
-        try:
-            self.ollama_client.generate(
-                model=self.model, 
-                prompt="System ready.", 
-                stream=False,
-                keep_alive=-1
-            )
-        except Exception as e:
-            logger.warning(f"Model warm-up failed: {e}")
-
     def _cosine_similarity(self, query_embedding: np.ndarray, doc_embeddings: np.ndarray) -> np.ndarray:
         query_norm = query_embedding / np.linalg.norm(query_embedding)
         doc_norms = doc_embeddings / np.linalg.norm(doc_embeddings, axis=1, keepdims=True)
@@ -203,20 +186,28 @@ class MemoryAlphaRAG:
         user_prompt = get_user_prompt(context_text, query)
         return system_prompt, user_prompt
 
-    def ask(self, query: str, max_tokens: int = 2048, top_k: int = 10, top_p: float = 0.8, temperature: float = 0.3) -> str:
+    def ask(self, query: str, max_tokens: int = 2048, top_k: int = 10, top_p: float = 0.8, temperature: float = 0.3, 
+            model: str = os.getenv("DEFAULT_MODEL")) -> str:
+        """
+        Ask a question using the specified model (defaults to $DEFAULT_MODEL if not provided).
+        """
+
+        if not model:
+            raise ValueError("model must be provided or set in DEFAULT_MODEL environment variable.")
+
         docs = self.search(query, top_k=top_k)
         system_prompt, user_prompt = self.build_prompt(query, docs)
-        
+
         # Build messages for chat
         messages = [
             {"role": "system", "content": system_prompt}
         ]
-        
+
         # Add conversation history
         for exchange in self.conversation_history[-3:]:  # Last 3 exchanges
             messages.append({"role": "user", "content": exchange["question"]})
             messages.append({"role": "assistant", "content": exchange["answer"]})
-        
+
         # Add current query
         messages.append({"role": "user", "content": user_prompt})
 
@@ -224,7 +215,7 @@ class MemoryAlphaRAG:
 
         if self.enable_streaming:
             for chunk in self.ollama_client.chat(
-                model=self.model,
+                model=model,
                 messages=messages,
                 stream=True,
                 options={"temperature": temperature, "top_p": top_p, "num_predict": max_tokens}
@@ -233,7 +224,7 @@ class MemoryAlphaRAG:
                     full_response += chunk['message']['content']
         else:
             result = self.ollama_client.chat(
-                model=self.model,
+                model=model,
                 messages=messages,
                 stream=False,
                 options={"temperature": temperature, "top_p": top_p, "num_predict": max_tokens}
@@ -270,3 +261,101 @@ class MemoryAlphaRAG:
     def _update_history(self, question: str, answer: str):
         self.conversation_history.append({"question": question, "answer": answer})
         self.conversation_history = self.conversation_history[-self.max_history_turns:]
+
+    def search_image(self, image_path: str, top_k: int = 5, 
+                     model: str = os.getenv("DEFAULT_IMAGE_MODEL")) -> Dict[str, Any]:
+        """
+        1. Generates CLIP embedding for the provided image
+        2. Searches text and image records, retrieves top_k
+        3. Downloads actual images for image results
+        4. Numbers and formats results
+        5. Passes all info to the model to guess the theme and image
+        """
+        from PIL import Image
+        import requests
+        import tempfile
+        import os
+
+        if not model:
+            raise ValueError("model must be provided or set in DEFAULT_IMAGE_MODEL environment variable.")
+
+        # 1. Generate CLIP embedding for the image
+        image = Image.open(image_path).convert('RGB')
+        image_embedding = self.clip_model.encode(image)
+        image_embedding = image_embedding.tolist()
+
+        # 2. Search text and image records
+        text_results = self.collection.query(
+            query_embeddings=[image_embedding],
+            n_results=top_k,
+            where={"content_type": "text"}
+        )
+        image_results = self.collection.query(
+            query_embeddings=[image_embedding],
+            n_results=top_k,
+            where={"content_type": "image"}
+        )
+
+        # 3. Download actual images for image results
+        downloaded_images = []
+        image_docs = image_results['documents'][0]
+        image_metas = image_results['metadatas'][0]
+        image_urls = [meta.get('image_url') for meta in image_metas]
+        for idx, url in enumerate(image_urls):
+            if url:
+                try:
+                    resp = requests.get(url, timeout=30)
+                    if resp.status_code == 200:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
+                            tmp.write(resp.content)
+                            downloaded_images.append(tmp.name)
+                    else:
+                        downloaded_images.append(None)
+                except Exception:
+                    downloaded_images.append(None)
+            else:
+                downloaded_images.append(None)
+
+        # 4. Number and format results
+        formatted_text = []
+        for i, (doc, meta, dist) in enumerate(zip(text_results['documents'][0], text_results['metadatas'][0], text_results['distances'][0]), 1):
+            formatted_text.append(f"Text Result {i}:\nTitle: {meta.get('title', 'Unknown')}\nSimilarity: {1-dist:.4f}\nContent: {doc[:300]}\n")
+
+        formatted_images = []
+        for i, (doc, meta, dist, img_path) in enumerate(zip(image_docs, image_metas, image_results['distances'][0], downloaded_images), 1):
+            formatted_images.append(f"Image Result {i}:\nImage Name: {meta.get('image_name', 'Unknown')}\nSource Page: {meta.get('source_page', 'Unknown')}\nSimilarity: {1-dist:.4f}\nDescription: {doc}\nImage Path: {img_path if img_path else 'Download failed'}\n")
+
+        # 5. Pass all info to the model
+        prompt = (
+            "Given the following search results, analyze what the image may contain."
+            "You may identify characters, species, organizations, types, classes, or purposes only."
+            "❌ Do NOT guess episode names, scenes, locations, or events under any circumstance — unless the prompt explicitly asks for them."
+            "If the entity is unclear, fall back to a broader type or category (e.g., 'humanoid alien', 'military uniform')."
+            "If no identification is possible, say so clearly."
+        )
+        prompt += "\n".join(formatted_text)
+        prompt += "\n".join(formatted_images)
+        prompt += "\nRespond with one or two lines about your guess of what is in the image."
+
+        messages = [
+            {"role": "system", "content": "You are an expert Star Trek analyst."},
+            {"role": "user", "content": prompt}
+        ]
+        response = self.ollama_client.chat(
+            model=model,
+            messages=messages,
+            stream=False
+        )
+        answer = response['message']['content']
+
+        # Clean up temp images
+        for img_path in downloaded_images:
+            if img_path and os.path.exists(img_path):
+                try:
+                    os.remove(img_path)
+                except Exception:
+                    pass
+
+        return {
+            "model_answer": answer
+        }

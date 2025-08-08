@@ -7,16 +7,22 @@ done
 
 echo "✅ Ollama is ready."
 
-# Check if DEFAULT_MODEL is available, if not, pull it
-echo "🔍 Checking if model '$DEFAULT_MODEL' is available..."
-if curl -s "$OLLAMA_URL/api/tags" | grep -q "\"name\":\"$DEFAULT_MODEL\""; then
-  echo "✅ Model '$DEFAULT_MODEL' is already available."
-else
-  echo "📥 Model '$DEFAULT_MODEL' not found. Pulling it now..."
-  curl -X POST "$OLLAMA_URL/api/pull" -H "Content-Type: application/json" -d "{\"name\":\"$DEFAULT_MODEL\"}"
-  echo ""
-  echo "✅ Model '$DEFAULT_MODEL' has been pulled successfully."
-fi
+pull_model() {
+  local model_name="$1"
+  echo "🔍 Checking if model '$model_name' is available..."
+  if curl -s "$OLLAMA_URL/api/tags" | grep -q "\"name\":\"$model_name\""; then
+    echo "✅ Model '$model_name' is already available."
+  else
+    echo "📥 Model '$model_name' not found. Pulling it now..."
+    curl -X POST "$OLLAMA_URL/api/pull" -H "Content-Type: application/json" -d "{\"name\":\"$model_name\"}"
+    echo ""
+    echo "✅ Model '$model_name' has been pulled successfully."
+  fi
+}
+
+# Pull the default models
+pull_model "$DEFAULT_MODEL"
+pull_model "$DEFAULT_IMAGE_MODEL"
 
 # Warm up ollama with the default model
 echo "🤖 Warming up Ollama with $DEFAULT_MODEL..."

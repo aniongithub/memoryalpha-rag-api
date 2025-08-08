@@ -1,3 +1,4 @@
+import os
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 import json
@@ -83,7 +84,7 @@ def stream_endpoint(
             
             # Stream the response
             for chunk in rag.ollama_client.chat(
-                model=rag.model,
+                model=os.getenv("DEFAULT_MODEL"),
                 messages=messages,
                 stream=True,
                 options={"temperature": temperature, "top_p": top_p, "num_predict": max_tokens}
