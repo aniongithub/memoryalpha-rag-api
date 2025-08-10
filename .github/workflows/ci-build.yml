@@ -52,22 +52,6 @@ jobs:
           exit 1
         fi
         
-    - name: Test streaming endpoint
-      run: |
-        # Test the streaming endpoint
-        response=$(timeout 30 curl -s -N -H "Accept: text/event-stream" \
-          "http://localhost:8000/memoryalpha/rag/stream?question=What%20is%20a%20Transporter?&thinkingmode=DISABLED&max_tokens=50&top_k=3" \
-          | head -10)
-        
-        # Check if streaming response contains data events
-        if echo "$response" | grep -q "data:"; then
-          echo "✅ Streaming endpoint test passed"
-        else
-          echo "❌ Streaming endpoint test failed - no streaming data found"
-          echo "Response: $response"
-          exit 1
-        fi
-
     - name: Generate OpenAPI spec
       run: |
         # Download OpenAPI spec

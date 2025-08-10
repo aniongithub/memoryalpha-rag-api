@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-import json
 import re
-import requests
 import logging
 import warnings
 import numpy as np
@@ -13,12 +11,6 @@ from typing import List, Dict, Any
 # External modules
 from sentence_transformers import CrossEncoder, SentenceTransformer
 import ollama
-
-# Optional prompt UI
-from prompt_toolkit import prompt
-from prompt_toolkit.history import InMemoryHistory
-from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.completion import WordCompleter
 
 # RAG components
 import pysqlite3
@@ -66,7 +58,6 @@ class MemoryAlphaRAG:
                  collection_name: str = os.getenv("COLLECTION_NAME", "memoryalpha"),
                  rerank_method: str = "cross-encoder",
                  thinking_mode: ThinkingMode = ThinkingMode.DISABLED,
-                 enable_streaming: bool = True,
                  max_history_turns: int = 5,
                  thinking_text: str = "Processing..."):
 
@@ -81,7 +72,6 @@ class MemoryAlphaRAG:
         self.ollama_url = ollama_url
         self.collection_name = collection_name
         self.thinking_mode = thinking_mode
-        self.enable_streaming = enable_streaming
         self.max_history_turns = max_history_turns
         self.rerank_method = rerank_method
         self.thinking_text = thinking_text
@@ -111,30 +101,40 @@ class MemoryAlphaRAG:
             path=self.chroma_db_path,
             settings=Settings(allow_reset=False)
         )
-        
-        # Initialize CLIP model for consistent embeddings with the database
-        logger.info("Loading CLIP model for embedding compatibility...")
+
+        # Initialize text embedding model and collection
+        logger.info("Loading text embedding model all-MiniLM-L6-v2 for text collection...")
+        self.text_model = SentenceTransformer('all-MiniLM-L6-v2')
+        logger.info("Text model loaded successfully")
+        from chromadb.utils import embedding_functions
+        class TextEmbeddingFunction(embedding_functions.EmbeddingFunction):
+            def __init__(self, text_model):
+                self.text_model = text_model
+            def __call__(self, input):
+                embeddings = []
+                for text in input:
+                    embedding = self.text_model.encode(text)
+                    embeddings.append(embedding.tolist())
+                return embeddings
+        self.text_ef = TextEmbeddingFunction(self.text_model)
+        self.text_collection = self.client.get_or_create_collection("memoryalpha_text", embedding_function=self.text_ef)
+
+        # Initialize CLIP model and image collection
+        logger.info("Loading CLIP model for image collection...")
         self.clip_model = SentenceTransformer('clip-ViT-B-32')
         logger.info("CLIP model loaded successfully")
-        
-        # Create CLIP embedding function to match the one used during data creation
-        from chromadb.utils import embedding_functions
-        
         class CLIPEmbeddingFunction(embedding_functions.EmbeddingFunction):
             def __init__(self, clip_model):
                 self.clip_model = clip_model
-                
             def __call__(self, input):
-                """Generate embeddings using CLIP model"""
                 embeddings = []
-                for text in input:
-                    embedding = self.clip_model.encode(text)
+                for img in input:
+                    embedding = self.clip_model.encode(img)
                     embeddings.append(embedding.tolist())
                 return embeddings
-        
         self.clip_ef = CLIPEmbeddingFunction(self.clip_model)
-        self.collection = self.client.get_collection(self.collection_name, embedding_function=self.clip_ef)
-        
+        self.image_collection = self.client.get_or_create_collection("memoryalpha_images", embedding_function=self.clip_ef)
+
         # Initialize Ollama client
         self.ollama_client = ollama.Client(host=self.ollama_url)
 
@@ -144,18 +144,16 @@ class MemoryAlphaRAG:
         return np.dot(doc_norms, query_norm)
 
     def search(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
-        # Search only text documents (filter out image documents for now)
-        results = self.collection.query(
-            query_texts=[query], 
-            n_results=top_k,
-            where={"content_type": "text"}  # Only search text documents
+        # Search only text documents using the text collection and text embedding model
+        results = self.text_collection.query(
+            query_texts=[query],
+            n_results=top_k
         )
         docs = [
             {
                 "content": doc,
                 "title": meta["title"],
-                "distance": dist,
-                "content_type": meta.get("content_type", "text")
+                "distance": dist
             }
             for doc, meta, dist in zip(results["documents"][0], results["metadatas"][0], results["distances"][0])
         ]
@@ -179,9 +177,8 @@ class MemoryAlphaRAG:
 
     def build_prompt(self, query: str, docs: List[Dict[str, Any]]) -> tuple[str, str]:
         system_prompt = get_system_prompt(self.thinking_mode)
-        char_limit = 800
         context_text = "\n\n".join(
-            f"=== {doc['title']} ===\n{doc['content'][:char_limit]}" for doc in docs
+            f"=== {doc['title']} ===\n{doc['content']}" for doc in docs
         )
         user_prompt = get_user_prompt(context_text, query)
         return system_prompt, user_prompt
@@ -211,25 +208,13 @@ class MemoryAlphaRAG:
         # Add current query
         messages.append({"role": "user", "content": user_prompt})
 
-        full_response = ""
-
-        if self.enable_streaming:
-            for chunk in self.ollama_client.chat(
-                model=model,
-                messages=messages,
-                stream=True,
-                options={"temperature": temperature, "top_p": top_p, "num_predict": max_tokens}
-            ):
-                if 'message' in chunk and 'content' in chunk['message']:
-                    full_response += chunk['message']['content']
-        else:
-            result = self.ollama_client.chat(
-                model=model,
-                messages=messages,
-                stream=False,
-                options={"temperature": temperature, "top_p": top_p, "num_predict": max_tokens}
-            )
-            full_response = result['message']['content']
+        result = self.ollama_client.chat(
+            model=model,
+            messages=messages,
+            stream=False,
+            options={"temperature": temperature, "top_p": top_p, "num_predict": max_tokens}
+        )
+        full_response = result['message']['content']
 
         # Handle thinking mode response processing
         if self.thinking_mode == ThinkingMode.DISABLED:
@@ -266,9 +251,9 @@ class MemoryAlphaRAG:
                      model: str = os.getenv("DEFAULT_IMAGE_MODEL")) -> Dict[str, Any]:
         """
         1. Generates CLIP embedding for the provided image
-        2. Searches text and image records, retrieves top_k
+        2. Searches image records, retrieves top_k
         3. Downloads actual images for image results
-        4. Numbers and formats results
+        4. Uses source page titles to fetch text context from text collection
         5. Passes all info to the model to guess the theme and image
         """
         from PIL import Image
@@ -284,20 +269,15 @@ class MemoryAlphaRAG:
         image_embedding = self.clip_model.encode(image)
         image_embedding = image_embedding.tolist()
 
-        # 2. Search text and image records
-        text_results = self.collection.query(
+        # 2. Search image records only
+        image_results = self.image_collection.query(
             query_embeddings=[image_embedding],
-            n_results=top_k,
-            where={"content_type": "text"}
-        )
-        image_results = self.collection.query(
-            query_embeddings=[image_embedding],
-            n_results=top_k,
-            where={"content_type": "image"}
+            n_results=top_k
         )
 
-        # 3. Download actual images for image results
+        # 3. Download actual images for image results and prepare for attachment
         downloaded_images = []
+        image_binaries = []
         image_docs = image_results['documents'][0]
         image_metas = image_results['metadatas'][0]
         image_urls = [meta.get('image_url') for meta in image_metas]
@@ -309,38 +289,62 @@ class MemoryAlphaRAG:
                         with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
                             tmp.write(resp.content)
                             downloaded_images.append(tmp.name)
+                            image_binaries.append(resp.content)
                     else:
                         downloaded_images.append(None)
+                        image_binaries.append(None)
                 except Exception:
                     downloaded_images.append(None)
+                    image_binaries.append(None)
             else:
                 downloaded_images.append(None)
+                image_binaries.append(None)
 
-        # 4. Number and format results
-        formatted_text = []
-        for i, (doc, meta, dist) in enumerate(zip(text_results['documents'][0], text_results['metadatas'][0], text_results['distances'][0]), 1):
-            formatted_text.append(f"Text Result {i}:\nTitle: {meta.get('title', 'Unknown')}\nSimilarity: {1-dist:.4f}\nContent: {doc[:300]}\n")
+        # 4. Use source page titles to fetch text context from text collection
+        source_titles = [meta.get('source_page') for meta in image_metas if meta.get('source_page')]
+        text_contexts = []
+        if source_titles:
+            # Query text collection for each source page title
+            for title in source_titles:
+                text_results = self.text_collection.query(
+                    query_texts=[title],
+                    n_results=1
+                )
+                if text_results['documents'][0]:
+                    doc = text_results['documents'][0][0]
+                    meta = text_results['metadatas'][0][0]
+                    dist = text_results['distances'][0][0]
+                    text_contexts.append(f"Text Context for '{title}':\nTitle: {meta.get('title', 'Unknown')}\nSimilarity: {1-dist:.4f}\nContent: {doc[:300]}\n")
 
+        # 5. Number and format results, reference images as Image 1, Image 2, etc.
         formatted_images = []
-        for i, (doc, meta, dist, img_path) in enumerate(zip(image_docs, image_metas, image_results['distances'][0], downloaded_images), 1):
-            formatted_images.append(f"Image Result {i}:\nImage Name: {meta.get('image_name', 'Unknown')}\nSource Page: {meta.get('source_page', 'Unknown')}\nSimilarity: {1-dist:.4f}\nDescription: {doc}\nImage Path: {img_path if img_path else 'Download failed'}\n")
+        image_indices = []
+        for i, (doc, meta, dist, img_path, img_bin) in enumerate(zip(image_docs, image_metas, image_results['distances'][0], downloaded_images, image_binaries), 1):
+            if img_bin:
+                formatted_images.append(f"Image {i}:\nImage Name: {meta.get('image_name', 'Unknown')}\nSource Page: {meta.get('source_page', 'Unknown')}\nSimilarity: {1-dist:.4f}\nDescription: {doc}\n(Refer to attached Image {i})\n")
+                image_indices.append(i-1)  # index in image_binaries
+            else:
+                formatted_images.append(f"Image {i}:\nImage Name: {meta.get('image_name', 'Unknown')}\nSource Page: {meta.get('source_page', 'Unknown')}\nSimilarity: {1-dist:.4f}\nDescription: {doc}\nImage download failed.\n")
 
-        # 5. Pass all info to the model
+        # 6. Pass all info to the model, attach images
         prompt = (
-            "Given the following search results, analyze what the image may contain."
-            "You may identify characters, species, organizations, types, classes, or purposes only."
-            "❌ Do NOT guess episode names, scenes, locations, or events under any circumstance — unless the prompt explicitly asks for them."
-            "If the entity is unclear, fall back to a broader type or category (e.g., 'humanoid alien', 'military uniform')."
-            "If no identification is possible, say so clearly."
+            "You are an expert Star Trek analyst. Your task is to identify the user-provided image (attached as Image 0) as specifically as possible. "
+            "Among the retrieved images and their metadata below, determine which image best matches Image 0. "
+            "Use the metadata (image name, source page, description, similarity score, and text context) of the closest match to identify the user image. "
+            "Do NOT mention the match number, just provide the identification. "
+            "If no close match is found, say so clearly.\n\n"
         )
-        prompt += "\n".join(formatted_text)
         prompt += "\n".join(formatted_images)
-        prompt += "\nRespond with one or two lines about your guess of what is in the image."
+        if text_contexts:
+            prompt += "\n".join(text_contexts)
+        prompt += "\nRespond with one or two lines identifying the user-provided image, based on the closest match and its metadata."
 
         messages = [
             {"role": "system", "content": "You are an expert Star Trek analyst."},
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": prompt, "images": [image_binaries[i] for i in image_indices]}
         ]
+
+        # Only attach images that were successfully downloaded
         response = self.ollama_client.chat(
             model=model,
             messages=messages,
