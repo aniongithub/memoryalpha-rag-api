@@ -6,7 +6,7 @@ A REST API for Retrieval-Augmented Generation (RAG) over Star Trek's MemoryAlpha
 
 ## Overview
 
-This project provides a streaming REST API that enables natural language queries over the comprehensive Star Trek MemoryAlpha database. It uses the vectorized database from [memoryalpha-vectordb](https://github.com/aniongithub/memoryalpha-vectordb) and combines it with local LLMs via Ollama to provide accurate, context-aware responses about Star Trek lore.
+This project provides a REST API that enables natural language queries over the comprehensive Star Trek MemoryAlpha database. It uses the vectorized database from [memoryalpha-vectordb](https://github.com/aniongithub/memoryalpha-vectordb) and combines it with local LLMs via Ollama to provide accurate, context-aware responses about Star Trek lore.
 
 The system implements:
 
@@ -169,7 +169,7 @@ graph TD
 
 ### Components
 
-- **FastAPI**: REST API framework with streaming support
+- **FastAPI**: REST API framework and OpenAPI spec generation
 - **ChromaDB**: Vector database for document storage and retrieval
 - **Ollama**: Local LLM inference server
 - **Cross-Encoder**: Document reranking for improved relevance

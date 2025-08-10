@@ -3,14 +3,16 @@ FROM python:3.12-slim-bullseye AS devcontainer
 ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update &&\
-    apt-get -y install curl wget git
+    apt-get -y install jq curl wget git
 
 COPY ./requirements.txt /tmp/pip-tmp/
 RUN pip install --no-cache-dir -r /tmp/pip-tmp/requirements.txt \
     && rm -rf /tmp/pip-tmp
 
 WORKDIR /data
-RUN wget https://github.com/aniongithub/memoryalpha-vectordb/releases/latest/download/enmemoryalpha_db.tar.gz &&\
+
+ARG MEMORYALPHA_DB_RELEASE=v0.5.0
+RUN wget https://github.com/aniongithub/memoryalpha-vectordb/releases/download/${MEMORYALPHA_DB_RELEASE}/enmemoryalpha_db.tar.gz &&\
     tar -xzf enmemoryalpha_db.tar.gz &&\
     rm enmemoryalpha_db.tar.gz &&\
     chmod -R 0777 /data
