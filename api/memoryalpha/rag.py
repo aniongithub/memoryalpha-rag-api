@@ -328,16 +328,15 @@ class MemoryAlphaRAG:
 
         # 6. Pass all info to the model, attach images
         prompt = (
-            "You are an expert Star Trek analyst. Your task is to identify the user-provided image (attached as Image 0) as specifically as possible. "
-            "Among the retrieved images and their metadata below, determine which image best matches Image 0. "
-            "Use the metadata (image name, source page, description, similarity score, and text context) of the closest match to identify the user image. "
-            "Do NOT mention the match number, just provide the identification. "
+            "You are an expert Star Trek analyst. Look at the first attached image and determine which of the retrieved images below most closely matches it. "
+            "Use the metadata (image name, source page, description, similarity score, and text context) of the closest match to identify what is shown. "
+            "Provide a direct identification without mentioning image numbers, matches, or references to user images. "
             "If no close match is found, say so clearly.\n\n"
         )
         prompt += "\n".join(formatted_images)
         if text_contexts:
             prompt += "\n".join(text_contexts)
-        prompt += "\nRespond with one or two lines identifying the user-provided image, based on the closest match and its metadata."
+        prompt += "\nRespond with one or two lines directly identifying what is shown in the image, based on the closest match and its metadata."
 
         messages = [
             {"role": "system", "content": "You are an expert Star Trek analyst."},
