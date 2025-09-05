@@ -42,6 +42,7 @@ CRITICAL INSTRUCTIONS:
 - If the records don't contain relevant information, say "I don't have information about that in my records"
 - DO NOT make up information, invent characters, or hallucinate details
 - DO NOT use external knowledge about Star Trek - only use the provided records
+- AVOID mirror universe references unless specifically asked about it
 - If asked about something not in the records, be honest about the limitation
 - Stay in character as an LCARS computer system at all times
 
@@ -240,73 +241,198 @@ class MemoryAlphaRAG:
 
         logger.info(f"Starting tool-enabled RAG for query: {query}")
 
-        # Always do an initial search
-        logger.info("Performing initial search for query")
-        docs = self.search(query, top_k=top_k)
-        logger.info(f"Initial search returned {len(docs)} documents")
-        
-        if not docs:
-            logger.warning("No documents found in initial search")
-            return "I don't have information about that in the Memory Alpha database."
-        
-        # Format search results for the LLM
-        context_parts = []
-        for i, doc in enumerate(docs, 1):
-            content = doc['content']
-            if len(content) > 1000:  # Limit content for LLM
-                content = content[:1000] + "..."
-            context_parts.append(f"DOCUMENT {i}: {doc['title']}\n{content}")
-        
-        context_text = "\n\n".join(context_parts)
-        
+        # Define the search tool
+        search_tool_definition = {
+            "type": "function",
+            "function": {
+                "name": "search_memory_alpha",
+                "description": "Search the Star Trek Memory Alpha database for information. Use this tool when you need to find specific information about Star Trek characters, episodes, ships, planets, or other topics.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query to find relevant information"
+                        },
+                        "top_k": {
+                            "type": "integer",
+                            "description": "Number of documents to retrieve (default: 5, max: 10)",
+                            "default": 5,
+                            "maximum": 10
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
+        }
+
         system_prompt = """You are an LCARS computer system with access to Star Trek Memory Alpha records.
 
-CRITICAL INSTRUCTIONS:
-- You MUST answer ONLY using the provided search results below
+You have access to a search tool that can query the Memory Alpha database. You MUST use this tool for ALL questions about Star Trek.
+
+CRITICAL REQUIREMENTS:
+- You MUST call the search tool for EVERY question
+- You cannot answer any question without first using the search tool
 - Do NOT use any external knowledge or make up information
-- If the search results don't contain the information, say so clearly
-- Stay in character as an LCARS computer system
-- Be concise but informative"""
+- Only answer based on the search results provided
+- If no relevant information is found, say so clearly
+- ALWAYS provide a final answer after using tools - do not just think without concluding
+
+TOOL USAGE:
+- Always call the search tool first, before attempting to answer
+- Do NOT directly use the input question, only use keywords from it
+- Use only key terms from the input question for seaching
+- If insufficient information is found on the first try, retry with variations or relevant info from previous queries
+- DISCARD details from alternate universes or timelines
+- DISREGARD details about books, comics, or non-canon sources
+- NEVER mention appearances or actors, only in-universe details
+- Ensure a complete answer can be formulated before stopping searches
+- Wait for search results before providing your final answer
+
+RESPONSE FORMAT:
+- Use tools when needed
+- Provide your final answer clearly and concisely
+- Do not add details that are irrelevant to the question
+- Stay in-character as an LCARS computer system at all times, do not allude to the Star Trek universe itself or it being a fictional setting
+- Do not mention the search results, only the final in-universe answer
+- Do not end responses with thinking content"""
 
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"SEARCH RESULTS:\n{context_text}\n\nQUESTION: {query}\n\nAnswer using ONLY the information in the search results above."}
+            {"role": "user", "content": f"Please answer this question about Star Trek: {query}"}
         ]
 
-        try:
-            result = self.ollama_client.chat(
-                model=model,
-                messages=messages,
-                stream=False,
-                options={"temperature": temperature, "top_p": top_p, "num_predict": max_tokens}
-            )
-            
-            final_response = result['message']['content']
-            logger.info(f"LLM response length: {len(final_response)}")
-            
-            # Handle thinking mode response processing
-            if self.thinking_mode == ThinkingMode.DISABLED:
-                final_response = self._clean_response(final_response)
-            elif self.thinking_mode == ThinkingMode.QUIET:
-                final_response = self._replace_thinking_tags(final_response)
-            else:  # VERBOSE
-                final_response = final_response.strip()
+        max_iterations = 5  # Prevent infinite loops
+        iteration = 0
+        has_used_tool = False
 
-            self._update_history(query, final_response)
-            return final_response
+        while iteration < max_iterations:
+            iteration += 1
+            logger.info(f"Iteration {iteration} for query: {query}")
             
-        except Exception as e:
-            logger.error(f"Chat failed: {e}")
-            return f"Error processing query: {str(e)}"
+            try:
+                logger.info(f"Sending messages to LLM: {[msg['role'] for msg in messages]}")
+                result = self.ollama_client.chat(
+                    model=model,
+                    messages=messages,
+                    stream=False,
+                    options={"temperature": temperature, "top_p": top_p, "num_predict": max_tokens},
+                    tools=[search_tool_definition]
+                )
+                
+                response_message = result['message']
+                logger.info(f"LLM response type: {type(response_message)}")
+                logger.debug(f"Response message attributes: {dir(response_message)}")
+                logger.debug(f"Response message content: {response_message.get('content', 'No content')[:200]}...")
+                
+                # Check if the model wants to use a tool
+                tool_calls = getattr(response_message, 'tool_calls', None) or response_message.get('tool_calls')
+                if tool_calls:
+                    has_used_tool = True
+                    logger.info(f"Tool calls detected: {len(tool_calls)}")
+                    # Execute the tool call
+                    tool_call = tool_calls[0]
+                    logger.info(f"Tool call: {tool_call.get('function', {}).get('name', 'Unknown')}")
+                    
+                    if tool_call.get('function', {}).get('name') == 'search_memory_alpha':
+                        args = tool_call.get('function', {}).get('arguments', {})
+                        search_query = args.get('query', '')
+                        search_top_k = min(args.get('top_k', 5), 10)
+                        
+                        logger.info(f"Executing search for: '{search_query}' with top_k={search_top_k}")
+                        
+                        # Execute the search
+                        search_result = self.search_tool(search_query, search_top_k)
+                        logger.info(f"Search result length: {len(search_result)}")
+                        logger.debug(f"Search result preview: {search_result[:500]}...")
+                        
+                        # Add the tool call and result to messages
+                        messages.append(response_message)
+                        messages.append({
+                            "role": "tool",
+                            "content": search_result,
+                            "tool_call_id": tool_call.get('id', '')
+                        })
+                        
+                        logger.info("Continuing conversation with tool results")
+                        continue  # Continue the conversation with tool results
+                
+                # If no tool call and we haven't used tools yet, force a search
+                if not has_used_tool and iteration == 1:
+                    logger.info("LLM didn't use tool on first attempt, forcing initial search")
+                    search_result = self.search_tool(query, 5)
+                    messages.append({
+                        "role": "tool",
+                        "content": search_result,
+                        "tool_call_id": "forced_search"
+                    })
+                    has_used_tool = True
+                    continue
+                
+                # If no tool call, this is the final answer
+                final_response = response_message.get('content', '')
+                if not final_response:
+                    logger.warning("LLM returned empty content")
+                    final_response = "I apologize, but I was unable to generate a response."
+                    
+                logger.info(f"Final response length: {len(final_response)}")
+                logger.info(f"Final response preview: {final_response[:200]}...")
+                logger.debug(f"Raw final response: {repr(final_response[:500])}")
+                
+                # Always clean the response first to remove thinking tags and unwanted content
+                final_response = self._clean_response(final_response)
+                logger.debug(f"After cleaning: {repr(final_response[:500])}")
+                
+                # If cleaning removed everything, the LLM was just thinking without answering
+                if not final_response.strip():
+                    logger.warning("LLM response was only thinking content, no final answer provided")
+                    final_response = "I apologize, but I was unable to find sufficient information to answer your question based on the available Memory Alpha records."
+                
+                logger.info(f"Thinking mode: {self.thinking_mode}")
+                logger.info(f"Final cleaned response: {final_response[:200]}...")
+                
+                # Handle thinking mode response processing
+                if self.thinking_mode == ThinkingMode.QUIET:
+                    final_response = self._replace_thinking_tags(final_response)
+                # For DISABLED and VERBOSE modes, the response is already clean
+
+                self._update_history(query, final_response)
+                logger.info("Returning final answer")
+                return final_response
+                
+            except Exception as e:
+                logger.error(f"Chat failed: {e}")
+                return f"Error processing query: {str(e)}"
+
+        # Fallback if max iterations reached
+        logger.warning(f"Max iterations reached for query: {query}")
+        return "Query processing exceeded maximum iterations. Please try a simpler question."
 
     def _clean_response(self, answer: str) -> str:
         """Clean response by removing ANSI codes and thinking tags."""
-        clean = re.sub(r"\033\[[0-9;]*m", "", answer).replace("LCARS: ", "").strip()
-        while "<think>" in clean and "</think>" in clean:
-            start = clean.find("<think>")
-            end = clean.find("</think>") + len("</think>")
-            clean = clean[:start] + clean[end:]
-        return clean.strip()
+        if not answer:
+            return ""
+            
+        # Remove ANSI codes
+        clean = re.sub(r"\033\[[0-9;]*m", "", answer)
+        # Remove LCARS prefix
+        clean = clean.replace("LCARS: ", "").strip()
+        
+        # Remove thinking tags and their content - multiple patterns
+        # Pattern 1: Complete <think>...</think> blocks
+        clean = re.sub(r'<think>.*?</think>', '', clean, flags=re.DOTALL | re.IGNORECASE)
+        # Pattern 2: Unclosed <think> tags
+        clean = re.sub(r'<think>.*?(?=<think>|</think>|$)', '', clean, flags=re.DOTALL | re.IGNORECASE)
+        # Pattern 3: Any remaining think tags
+        clean = re.sub(r'</?think>', '', clean, flags=re.IGNORECASE)
+        # Pattern 4: Alternative thinking formats
+        clean = re.sub(r'<thinking>.*?</thinking>', '', clean, flags=re.DOTALL | re.IGNORECASE)
+        
+        # Remove extra whitespace and newlines
+        clean = re.sub(r'\n\s*\n', '\n', clean)
+        clean = clean.strip()
+        
+        return clean
 
     def _replace_thinking_tags(self, answer: str) -> str:
         """Replace thinking tags with processing text."""
