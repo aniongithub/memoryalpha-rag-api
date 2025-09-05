@@ -1,0 +1,10 @@
+version: "3.9"
+
+services:
+  lcars:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    user: vscode
+    volumes:
+      - ./.cache:/home/vscode/.cache # Override default cache location for devcontainer only 
