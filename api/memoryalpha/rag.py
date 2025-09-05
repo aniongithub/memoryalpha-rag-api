@@ -128,15 +128,6 @@ class MemoryAlphaRAG:
         return self._cross_encoder
 
     @property
-    def clip_model(self):
-        """Lazy load CLIP model for image search."""
-        if self._clip_model is None:
-            logger.info("Loading CLIP model for image search...")
-            self._clip_model = SentenceTransformer('clip-ViT-B-32')
-            logger.info("CLIP model loaded successfully")
-        return self._clip_model
-
-    @property
     def text_collection(self):
         """Lazy load text collection."""
         if self._text_collection is None:
@@ -155,26 +146,6 @@ class MemoryAlphaRAG:
             self._text_ef = TextEmbeddingFunction(self.text_model)
             self._text_collection = self.client.get_or_create_collection("memoryalpha_text", embedding_function=self._text_ef)
         return self._text_collection
-
-    @property
-    def image_collection(self):
-        """Lazy load image collection."""
-        if self._image_collection is None:
-            from chromadb.utils import embedding_functions
-
-            class CLIPEmbeddingFunction(embedding_functions.EmbeddingFunction):
-                def __init__(self, clip_model):
-                    self.clip_model = clip_model
-                def __call__(self, input):
-                    embeddings = []
-                    for img in input:
-                        embedding = self.clip_model.encode(img)
-                        embeddings.append(embedding.tolist())
-                    return embeddings
-
-            self._clip_ef = CLIPEmbeddingFunction(self.clip_model)
-            self._image_collection = self.client.get_or_create_collection("memoryalpha_images", embedding_function=self._clip_ef)
-        return self._image_collection
 
     def search(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
         """Search the Memory Alpha database for relevant documents."""
@@ -234,34 +205,73 @@ class MemoryAlphaRAG:
         user_prompt = get_user_prompt(context_text, query)
         return system_prompt, user_prompt
 
+    def search_tool(self, query: str, top_k: int = 5) -> str:
+        """
+        Tool function that the LLM can call to search the database.
+        Returns formatted search results as a string.
+        """
+        logger.info(f"Search tool called with query: '{query}', top_k: {top_k}")
+        docs = self.search(query, top_k=top_k)
+        logger.info(f"Search returned {len(docs)} documents")
+        
+        if not docs:
+            logger.warning(f"No documents found for query: {query}")
+            return f"No relevant documents found for query: {query}"
+        
+        results = []
+        for i, doc in enumerate(docs, 1):
+            content = doc['content']
+            if len(content) > 500:  # Limit content for tool responses
+                content = content[:500] + "..."
+            results.append(f"DOCUMENT {i}: {doc['title']}\n{content}")
+        
+        formatted_result = f"Search results for '{query}':\n\n" + "\n\n".join(results)
+        logger.info(f"Formatted search result length: {len(formatted_result)}")
+        return formatted_result
+
     def ask(self, query: str, max_tokens: int = 2048, top_k: int = 10, top_p: float = 0.8, temperature: float = 0.3,
             model: str = os.getenv("DEFAULT_MODEL")) -> str:
         """
-        Ask a question using the Memory Alpha RAG system.
+        Ask a question using the advanced Memory Alpha RAG system with tool use.
         """
 
         if not model:
             raise ValueError("model must be provided or set in DEFAULT_MODEL environment variable.")
 
-        # Search for relevant documents
+        logger.info(f"Starting tool-enabled RAG for query: {query}")
+
+        # Always do an initial search
+        logger.info("Performing initial search for query")
         docs = self.search(query, top_k=top_k)
-        logger.info(f"Found {len(docs)} documents for query: {query}")
+        logger.info(f"Initial search returned {len(docs)} documents")
+        
+        if not docs:
+            logger.warning("No documents found in initial search")
+            return "I don't have information about that in the Memory Alpha database."
+        
+        # Format search results for the LLM
+        context_parts = []
+        for i, doc in enumerate(docs, 1):
+            content = doc['content']
+            if len(content) > 1000:  # Limit content for LLM
+                content = content[:1000] + "..."
+            context_parts.append(f"DOCUMENT {i}: {doc['title']}\n{content}")
+        
+        context_text = "\n\n".join(context_parts)
+        
+        system_prompt = """You are an LCARS computer system with access to Star Trek Memory Alpha records.
 
-        # Build prompts
-        system_prompt, user_prompt = self.build_prompt(query, docs)
+CRITICAL INSTRUCTIONS:
+- You MUST answer ONLY using the provided search results below
+- Do NOT use any external knowledge or make up information
+- If the search results don't contain the information, say so clearly
+- Stay in character as an LCARS computer system
+- Be concise but informative"""
 
-        # Build messages for chat
         messages = [
-            {"role": "system", "content": system_prompt}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"SEARCH RESULTS:\n{context_text}\n\nQUESTION: {query}\n\nAnswer using ONLY the information in the search results above."}
         ]
-
-        # Add conversation history (limited)
-        for exchange in self.conversation_history[-2:]:  # Last 2 exchanges
-            messages.append({"role": "user", "content": exchange["question"]})
-            messages.append({"role": "assistant", "content": exchange["answer"]})
-
-        # Add current query
-        messages.append({"role": "user", "content": user_prompt})
 
         try:
             result = self.ollama_client.chat(
@@ -270,19 +280,21 @@ class MemoryAlphaRAG:
                 stream=False,
                 options={"temperature": temperature, "top_p": top_p, "num_predict": max_tokens}
             )
-            full_response = result['message']['content']
-
+            
+            final_response = result['message']['content']
+            logger.info(f"LLM response length: {len(final_response)}")
+            
             # Handle thinking mode response processing
             if self.thinking_mode == ThinkingMode.DISABLED:
-                final_response = self._clean_response(full_response)
+                final_response = self._clean_response(final_response)
             elif self.thinking_mode == ThinkingMode.QUIET:
-                final_response = self._replace_thinking_tags(full_response)
+                final_response = self._replace_thinking_tags(final_response)
             else:  # VERBOSE
-                final_response = full_response.strip()
+                final_response = final_response.strip()
 
             self._update_history(query, final_response)
             return final_response
-
+            
         except Exception as e:
             logger.error(f"Chat failed: {e}")
             return f"Error processing query: {str(e)}"
@@ -309,69 +321,3 @@ class MemoryAlphaRAG:
         """Update conversation history."""
         self.conversation_history.append({"question": question, "answer": answer})
         self.conversation_history = self.conversation_history[-self.max_history_turns:]
-
-    def search_image(self, image_path: str, top_k: int = 5, 
-                     model: str = os.getenv("DEFAULT_IMAGE_MODEL")) -> Dict[str, Any]:
-        """
-        Search for images similar to the provided image.
-        """
-        from PIL import Image
-        import requests
-        import tempfile
-        import os
-
-        if not model:
-            raise ValueError("model must be provided or set in DEFAULT_IMAGE_MODEL environment variable.")
-
-        try:
-            # Load image and generate embedding
-            image = Image.open(image_path).convert('RGB')
-            image_embedding = self.clip_model.encode(image)
-            image_embedding = image_embedding.tolist()
-
-            # Search image collection
-            image_results = self.image_collection.query(
-                query_embeddings=[image_embedding],
-                n_results=top_k
-            )
-
-            # Process results
-            if not image_results["documents"] or not image_results["documents"][0]:
-                return {"model_answer": "No matching visual records found in Starfleet archives."}
-
-            # Format results for the model
-            formatted_results = []
-            for i, (doc, meta, dist) in enumerate(zip(
-                image_results['documents'][0],
-                image_results['metadatas'][0],
-                image_results['distances'][0]
-            ), 1):
-                record_name = meta.get('image_name', 'Unknown visual record')
-                formatted_results.append(f"Visual Record {i}: {record_name}")
-
-            result_text = "\n".join(formatted_results)
-
-            # Use LLM to provide a natural language summary
-            prompt = f"""You are an LCARS computer system analyzing visual records from Starfleet archives.
-
-Based on these visual record matches, identify what subject or scene is being depicted:
-
-{result_text}
-
-Provide a direct identification of the subject without referencing images, searches, or technical processes. Stay in character as an LCARS computer system."""
-
-            result = self.ollama_client.chat(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You are an LCARS computer system. Respond in character without breaking the Star Trek universe immersion. Do not reference images, searches, or technical processes."},
-                    {"role": "user", "content": prompt}
-                ],
-                stream=False,
-                options={"temperature": 0.3, "num_predict": 200}
-            )
-
-            return {"model_answer": result['message']['content']}
-
-        except Exception as e:
-            logger.error(f"Image search failed: {e}")
-            return {"model_answer": "Error accessing visual records database."}

@@ -20,6 +20,7 @@ def ask_endpoint(
 ):
     """
     Query the RAG pipeline and return the full response (including thinking if enabled).
+    Now uses advanced tool-enabled RAG by default for better results.
     """
     try:
         # Set the thinking mode for this request
