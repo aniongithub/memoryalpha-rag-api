@@ -38,11 +38,12 @@ def get_system_prompt(thinking_mode: ThinkingMode) -> str:
     base_prompt = """You are an LCARS computer system with access to Star Trek Memory Alpha records.
 
 CRITICAL INSTRUCTIONS:
-- You MUST answer ONLY using information from the provided records below
+- You MUST answer ONLY using information from the provided records
 - If the records don't contain relevant information, say "I don't have information about that in my records"
 - DO NOT make up information, invent characters, or hallucinate details
 - DO NOT use external knowledge about Star Trek - only use the provided records
 - If asked about something not in the records, be honest about the limitation
+- Stay in character as an LCARS computer system at all times
 
 """
 
@@ -57,14 +58,14 @@ def get_user_prompt(context_text: str, query: str) -> str:
     """Format user prompt with context and query"""
 
     if not context_text.strip():
-        return f"I have no relevant records for this query. Please ask about Star Trek topics that are documented in Memory Alpha.\n\nQuery: {query}"
+        return f"Starfleet database records contain no relevant information for this inquiry. Please inquire about documented Star Trek topics.\n\nINQUIRY: {query}"
 
     return f"""MEMORY ALPHA RECORDS:
 {context_text}
 
-QUESTION: {query}
+INQUIRY: {query}
 
-Answer using ONLY the information in the records above. If the records don't contain the information needed to answer this question, say so clearly."""
+Accessing Starfleet database records. Provide analysis using ONLY the information in the records above. If the records don't contain the information needed to answer this inquiry, state that the information is not available in current records."""
 
 class MemoryAlphaRAG:
     def __init__(self,
@@ -88,42 +89,92 @@ class MemoryAlphaRAG:
         self.thinking_text = thinking_text
         self.conversation_history: List[Dict[str, str]] = []
 
-        # Initialize Ollama client first
+        # Initialize lightweight components
         self.ollama_client = ollama.Client(host=self.ollama_url)
-
-        # Initialize ChromaDB
         self.client = chromadb.PersistentClient(
             path=self.chroma_db_path,
             settings=Settings(allow_reset=False)
         )
 
-        # Initialize text collection
-        logger.info("Loading text embedding model...")
-        self.text_model = SentenceTransformer('all-MiniLM-L6-v2')
-        logger.info("Text model loaded successfully")
+        # Lazy-loaded components
+        self._text_model = None
+        self._cross_encoder = None
+        self._clip_model = None
+        self._text_collection = None
+        self._image_collection = None
+        self._text_ef = None
+        self._clip_ef = None
 
-        from chromadb.utils import embedding_functions
-        class TextEmbeddingFunction(embedding_functions.EmbeddingFunction):
-            def __init__(self, text_model):
-                self.text_model = text_model
-            def __call__(self, input):
-                embeddings = []
-                for text in input:
-                    embedding = self.text_model.encode(text)
-                    embeddings.append(embedding.tolist())
-                return embeddings
+    @property
+    def text_model(self):
+        """Lazy load text embedding model."""
+        if self._text_model is None:
+            logger.info("Loading text embedding model...")
+            self._text_model = SentenceTransformer('all-MiniLM-L6-v2')
+            logger.info("Text model loaded successfully")
+        return self._text_model
 
-        self.text_ef = TextEmbeddingFunction(self.text_model)
-        self.text_collection = self.client.get_or_create_collection("memoryalpha_text", embedding_function=self.text_ef)
+    @property
+    def cross_encoder(self):
+        """Lazy load cross-encoder model."""
+        if self._cross_encoder is None:
+            try:
+                logger.info("Loading cross-encoder model...")
+                self._cross_encoder = CrossEncoder('BAAI/bge-reranker-v2-m3')
+                logger.info("Cross-encoder model loaded successfully")
+            except Exception as e:
+                logger.warning(f"Could not load cross-encoder: {e}")
+                self._cross_encoder = None
+        return self._cross_encoder
 
-        # Initialize cross-encoder for reranking
-        try:
-            logger.info("Loading cross-encoder model...")
-            self.cross_encoder = CrossEncoder('BAAI/bge-reranker-v2-m3')
-            logger.info("Cross-encoder model loaded successfully")
-        except Exception:
-            logger.warning("Could not load cross-encoder, using basic search only")
-            self.cross_encoder = None
+    @property
+    def clip_model(self):
+        """Lazy load CLIP model for image search."""
+        if self._clip_model is None:
+            logger.info("Loading CLIP model for image search...")
+            self._clip_model = SentenceTransformer('clip-ViT-B-32')
+            logger.info("CLIP model loaded successfully")
+        return self._clip_model
+
+    @property
+    def text_collection(self):
+        """Lazy load text collection."""
+        if self._text_collection is None:
+            from chromadb.utils import embedding_functions
+
+            class TextEmbeddingFunction(embedding_functions.EmbeddingFunction):
+                def __init__(self, text_model):
+                    self.text_model = text_model
+                def __call__(self, input):
+                    embeddings = []
+                    for text in input:
+                        embedding = self.text_model.encode(text)
+                        embeddings.append(embedding.tolist())
+                    return embeddings
+
+            self._text_ef = TextEmbeddingFunction(self.text_model)
+            self._text_collection = self.client.get_or_create_collection("memoryalpha_text", embedding_function=self._text_ef)
+        return self._text_collection
+
+    @property
+    def image_collection(self):
+        """Lazy load image collection."""
+        if self._image_collection is None:
+            from chromadb.utils import embedding_functions
+
+            class CLIPEmbeddingFunction(embedding_functions.EmbeddingFunction):
+                def __init__(self, clip_model):
+                    self.clip_model = clip_model
+                def __call__(self, input):
+                    embeddings = []
+                    for img in input:
+                        embedding = self.clip_model.encode(img)
+                        embeddings.append(embedding.tolist())
+                    return embeddings
+
+            self._clip_ef = CLIPEmbeddingFunction(self.clip_model)
+            self._image_collection = self.client.get_or_create_collection("memoryalpha_images", embedding_function=self._clip_ef)
+        return self._image_collection
 
     def search(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
         """Search the Memory Alpha database for relevant documents."""
@@ -258,3 +309,69 @@ class MemoryAlphaRAG:
         """Update conversation history."""
         self.conversation_history.append({"question": question, "answer": answer})
         self.conversation_history = self.conversation_history[-self.max_history_turns:]
+
+    def search_image(self, image_path: str, top_k: int = 5, 
+                     model: str = os.getenv("DEFAULT_IMAGE_MODEL")) -> Dict[str, Any]:
+        """
+        Search for images similar to the provided image.
+        """
+        from PIL import Image
+        import requests
+        import tempfile
+        import os
+
+        if not model:
+            raise ValueError("model must be provided or set in DEFAULT_IMAGE_MODEL environment variable.")
+
+        try:
+            # Load image and generate embedding
+            image = Image.open(image_path).convert('RGB')
+            image_embedding = self.clip_model.encode(image)
+            image_embedding = image_embedding.tolist()
+
+            # Search image collection
+            image_results = self.image_collection.query(
+                query_embeddings=[image_embedding],
+                n_results=top_k
+            )
+
+            # Process results
+            if not image_results["documents"] or not image_results["documents"][0]:
+                return {"model_answer": "No matching visual records found in Starfleet archives."}
+
+            # Format results for the model
+            formatted_results = []
+            for i, (doc, meta, dist) in enumerate(zip(
+                image_results['documents'][0],
+                image_results['metadatas'][0],
+                image_results['distances'][0]
+            ), 1):
+                record_name = meta.get('image_name', 'Unknown visual record')
+                formatted_results.append(f"Visual Record {i}: {record_name}")
+
+            result_text = "\n".join(formatted_results)
+
+            # Use LLM to provide a natural language summary
+            prompt = f"""You are an LCARS computer system analyzing visual records from Starfleet archives.
+
+Based on these visual record matches, identify what subject or scene is being depicted:
+
+{result_text}
+
+Provide a direct identification of the subject without referencing images, searches, or technical processes. Stay in character as an LCARS computer system."""
+
+            result = self.ollama_client.chat(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are an LCARS computer system. Respond in character without breaking the Star Trek universe immersion. Do not reference images, searches, or technical processes."},
+                    {"role": "user", "content": prompt}
+                ],
+                stream=False,
+                options={"temperature": 0.3, "num_predict": 200}
+            )
+
+            return {"model_answer": result['message']['content']}
+
+        except Exception as e:
+            logger.error(f"Image search failed: {e}")
+            return {"model_answer": "Error accessing visual records database."}
