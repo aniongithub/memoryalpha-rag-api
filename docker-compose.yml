@@ -20,7 +20,7 @@ services:
       - ollama
     volumes:
       - .:/workspace/memoryalpha-rag-api
-      - rag_cache:/root/.cache
+      - model_cache:/root/.cache
     ports:
       - "8000:8000"  # for REST API
     networks:
@@ -31,7 +31,7 @@ services:
 
 volumes:
   ollama_data:
-  rag_cache:
+  model_cache:
 
 networks:
   odn:

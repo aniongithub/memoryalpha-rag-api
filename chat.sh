@@ -12,6 +12,40 @@ echo "🖖 Welcome to MemoryAlpha RAG Chat"
 echo "Type 'quit' or 'exit' to end the session"
 echo "----------------------------------------"
 
+# Function to handle continuous text questions
+ask_mode() {
+    echo "🤖 Entering Question Mode - Type 'q' to return to main menu"
+    echo "----------------------------------------"
+    while true; do
+        echo -n "❓ Enter your question (or 'q' to quit): "
+        read -r question
+        if [[ "$question" == "q" || "$question" == "quit" ]]; then
+            break
+        fi
+        if [[ -z "$question" ]]; then
+            continue
+        fi
+        ask_question "$question"
+    done
+}
+
+# Function to handle continuous image identification
+identify_mode() {
+    echo "🖼️ Entering Image Identification Mode - Type 'q' to return to main menu"
+    echo "----------------------------------------"
+    while true; do
+        echo -n "🖼️ Enter local image path or image URL (or 'q' to quit): "
+        read -r image_path
+        if [[ "$image_path" == "q" || "$image_path" == "quit" ]]; then
+            break
+        fi
+        if [[ -z "$image_path" ]]; then
+            continue
+        fi
+        identify_image "$image_path"
+    done
+}
+
 # Function to handle text question
 ask_question() {
     local question="$1"
@@ -83,27 +117,17 @@ identify_image() {
 
 while true; do
     echo "Choose an option:"
-    echo "  1) Ask a Star Trek question"
-    echo "  2) Identify an image"
+    echo "  1) Ask Star Trek questions"
+    echo "  2) Identify images"
     echo "  q) Quit"
     echo -n "Enter choice [1/2/q]: "
     read -r choice
     case "$choice" in
         1)
-            echo -n "❓ Enter your question: "
-            read -r question
-            if [[ -z "$question" ]]; then
-                continue
-            fi
-            ask_question "$question"
+            ask_mode
             ;;
         2)
-            echo -n "🖼️ Enter local image path or image URL: "
-            read -r image_path
-            if [[ -z "$image_path" ]]; then
-                continue
-            fi
-            identify_image "$image_path"
+            identify_mode
             ;;
         q|quit|exit)
             echo "🖖 Live long and prosper!"

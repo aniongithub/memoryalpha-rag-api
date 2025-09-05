@@ -1,10 +1,14 @@
 {
 	"name": "Memoryalpha RAG API",
-	"dockerComposeFile": "../docker-compose.yml",
+	"dockerComposeFile": [
+		"../docker-compose.yml",
+		"docker-compose.devcontainer.yml"
+	],
 	"service": "lcars",
 	"overrideCommand": true,
 	"remoteUser": "vscode",
 	"postAttachCommand": "/workspace/memoryalpha-rag-api/wait-for-ollama.sh",
+	"postCreateCommand": "sudo chown -R vscode:users ${containerWorkspaceFolder}/.cache",
 	"features": {
 		"ghcr.io/nils-geistmann/devcontainers-features/create-remote-user:0": {
 			"passwordLessSudo": true
