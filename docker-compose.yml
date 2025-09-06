@@ -11,7 +11,7 @@ services:
       - odn
     env_file:
       - .env
-
+      
   lcars:
     build:
       context: .

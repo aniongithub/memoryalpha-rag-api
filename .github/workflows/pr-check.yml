@@ -39,14 +39,15 @@ jobs:
         
     - name: Test ask endpoint
       run: |
-        # Test the synchronous ask endpoint with a simple query
-        response=$(curl -s -f "http://localhost:8000/memoryalpha/rag/ask?question=What%20is%20the%20Enterprise?&thinkingmode=DISABLED&max_tokens=100&top_k=3")
-        
+        # Test the ask endpoint with a simple query
+        response=$(curl -X POST "http://localhost:8000/memoryalpha/rag/ask"   -H "Content-Type: application/json"   -d '{
+            "question": "What was the name of human who discovered warp drive?"
+          }')
         # Check if response contains expected content
-        if echo "$response" | grep -q "Enterprise"; then
+        if echo "$response" | grep -q "Zefram Cochrane"; then
           echo "✅ Ask endpoint test passed"
         else
-          echo "❌ Ask endpoint test failed - no relevant content found"
+          echo "❌ Ask endpoint test failed, answer did not contain expected content"
           echo "Response: $response"
           exit 1
         fi
