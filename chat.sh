@@ -2,7 +2,7 @@
 
 # Interactive chat script for MemoryAlpha RAG API
 BASE_URL="http://localhost:8000"
-THINKING_MODE="DISABLED"
+THINKING_MODE="VERBOSE"
 MAX_TOKENS=2048
 TOP_K=5
 TOP_P=0.8

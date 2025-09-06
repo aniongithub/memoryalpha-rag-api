@@ -22,7 +22,6 @@
 			"extensions": [
 				"ms-python.python",
 				"zaaack.markdown-editor",
-				"bierner.emojisense",
 				"ms-python.debugpy"
 			]
         }

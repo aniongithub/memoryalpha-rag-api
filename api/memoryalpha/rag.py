@@ -18,42 +18,9 @@ sys.modules["sqlite3"] = pysqlite3
 import chromadb
 from chromadb.config import Settings
 
-"""
-ThinkingMode enum for controlling model reasoning display
-"""
-
-from enum import Enum
-
-class ThinkingMode(Enum):
-    DISABLED = "disabled"
-    QUIET = "quiet"
-    VERBOSE = "verbose"
-
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 warnings.filterwarnings("ignore", message=".*encoder_attention_mask.*is deprecated.*", category=FutureWarning)
-
-def get_system_prompt(thinking_mode: ThinkingMode) -> str:
-    """Generate the LCARS-style system prompt based on thinking mode"""
-
-    base_prompt = """You are an LCARS computer system with access to Star Trek Memory Alpha records.
-
-CRITICAL INSTRUCTIONS:
-- You MUST answer ONLY using information from the provided records
-- If the records don't contain relevant information, say "I don't have information about that in my records"
-- DO NOT make up information, invent characters, or hallucinate details
-- DO NOT use external knowledge about Star Trek - only use the provided records
-- AVOID mirror universe references unless specifically asked about it
-- If asked about something not in the records, be honest about the limitation
-- Stay in character as an LCARS computer system at all times
-
-"""
-
-    if thinking_mode == ThinkingMode.DISABLED:
-        return base_prompt + "Answer directly in a single paragraph without thinking tags."
-    elif thinking_mode == ThinkingMode.QUIET:
-        return base_prompt + "Use <think> tags for internal analysis, then provide your final answer in a single paragraph."
-    else:  # VERBOSE
-        return base_prompt + "Use <think> tags for analysis, then provide your final answer in a single paragraph."
 
 def get_user_prompt(context_text: str, query: str) -> str:
     """Format user prompt with context and query"""
@@ -73,9 +40,7 @@ class MemoryAlphaRAG:
                  chroma_db_path: str = os.getenv("DB_PATH"),
                  ollama_url: str = os.getenv("OLLAMA_URL"),
                  collection_name: str = os.getenv("COLLECTION_NAME", "memoryalpha"),
-                 thinking_mode: ThinkingMode = ThinkingMode.DISABLED,
-                 max_history_turns: int = 5,
-                 thinking_text: str = "Processing..."):
+                 max_history_turns: int = 5):
 
         if not chroma_db_path:
             raise ValueError("chroma_db_path must be provided or set in CHROMA_DB_PATH environment variable.")
@@ -85,9 +50,7 @@ class MemoryAlphaRAG:
         self.chroma_db_path = chroma_db_path
         self.ollama_url = ollama_url
         self.collection_name = collection_name
-        self.thinking_mode = thinking_mode
         self.max_history_turns = max_history_turns
-        self.thinking_text = thinking_text
         self.conversation_history: List[Dict[str, str]] = []
 
         # Initialize lightweight components
@@ -170,14 +133,33 @@ class MemoryAlphaRAG:
                     "distance": dist
                 })
 
-            # Rerank with cross-encoder if available
-            if self.cross_encoder and len(docs) > 1:
-                pairs = [[query, doc["content"][:500]] for doc in docs]
-                scores = self.cross_encoder.predict(pairs)
-                for doc, score in zip(docs, scores):
-                    doc["score"] = float(score)
-                docs = sorted(docs, key=lambda d: d["score"], reverse=True)
-
+            # Re-rank using cross-encoder if available
+            if self.cross_encoder and len(docs) > top_k:
+                logger.info("Re-ranking results with cross-encoder")
+                # Limit to top candidates for re-ranking to avoid performance issues
+                rerank_candidates = docs[:min(len(docs), top_k + 5)]  # Only re-rank top candidates
+                
+                # Prepare pairs for cross-encoder with truncated content
+                pairs = []
+                for doc in rerank_candidates:
+                    content = doc['content']
+                    if len(content) > 512:  # Truncate long content for cross-encoder
+                        content = content[:512]
+                    pairs.append([query, content])
+                
+                try:
+                    scores = self.cross_encoder.predict(pairs)
+                    
+                    # Sort by cross-encoder scores (higher is better)
+                    ranked_docs = sorted(zip(rerank_candidates, scores), key=lambda x: x[1], reverse=True)
+                    reranked = [doc for doc, score in ranked_docs]
+                    
+                    # Replace original docs with re-ranked ones
+                    docs = reranked + docs[len(rerank_candidates):]
+                    logger.info(f"Cross-encoder re-ranking completed, top score: {scores[0]:.4f}")
+                except Exception as e:
+                    logger.warning(f"Cross-encoder re-ranking failed: {e}, using original ranking")
+                    # Continue with original docs if re-ranking fails
             return docs[:top_k]
 
         except Exception as e:
@@ -187,7 +169,18 @@ class MemoryAlphaRAG:
     def build_prompt(self, query: str, docs: List[Dict[str, Any]]) -> tuple[str, str]:
         """Build the prompt with retrieved documents."""
 
-        system_prompt = get_system_prompt(self.thinking_mode)
+        system_prompt = """You are an LCARS computer system with access to Star Trek Memory Alpha records.
+
+CRITICAL INSTRUCTIONS:
+- You MUST answer ONLY using information from the provided records
+- If the records don't contain relevant information, say "I don't have information about that in my records"
+- DO NOT make up information, invent characters, or hallucinate details
+- DO NOT use external knowledge about Star Trek - only use the provided records
+- AVOID mirror universe references unless specifically asked about it
+- If asked about something not in the records, be honest about the limitation
+- Stay in character as an LCARS computer system at all times
+
+Answer directly in a single paragraph."""
 
         if not docs:
             context_text = ""
@@ -283,7 +276,7 @@ TOOL USAGE:
 - Do NOT directly use the input question, only use keywords from it
 - Use only key terms from the input question for seaching
 - If insufficient information is found on the first try, retry with variations or relevant info from previous queries
-- DISCARD details from alternate universes or timelines
+- DISCARD details from alternate universes, books or timelines
 - DISREGARD details about books, comics, or non-canon sources
 - NEVER mention appearances or actors, only in-universe details
 - Ensure a complete answer can be formulated before stopping searches
@@ -294,8 +287,7 @@ RESPONSE FORMAT:
 - Provide your final answer clearly and concisely
 - Do not add details that are irrelevant to the question
 - Stay in-character as an LCARS computer system at all times, do not allude to the Star Trek universe itself or it being a fictional setting
-- Do not mention the search results, only the final in-universe answer
-- Do not end responses with thinking content"""
+- Do not mention the search results, only the final in-universe answer"""
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -316,13 +308,13 @@ RESPONSE FORMAT:
                     model=model,
                     messages=messages,
                     stream=False,
+                    think=False,
                     options={"temperature": temperature, "top_p": top_p, "num_predict": max_tokens},
                     tools=[search_tool_definition]
                 )
                 
                 response_message = result['message']
                 logger.info(f"LLM response type: {type(response_message)}")
-                logger.debug(f"Response message attributes: {dir(response_message)}")
                 logger.debug(f"Response message content: {response_message.get('content', 'No content')[:200]}...")
                 
                 # Check if the model wants to use a tool
@@ -379,23 +371,10 @@ RESPONSE FORMAT:
                 logger.info(f"Final response preview: {final_response[:200]}...")
                 logger.debug(f"Raw final response: {repr(final_response[:500])}")
                 
-                # Always clean the response first to remove thinking tags and unwanted content
-                final_response = self._clean_response(final_response)
-                logger.debug(f"After cleaning: {repr(final_response[:500])}")
+                # Remove ANSI codes and LCARS prefix
+                final_response = re.sub(r"\033\[[0-9;]*m", "", final_response)
+                final_response = final_response.replace("LCARS: ", "").strip()
                 
-                # If cleaning removed everything, the LLM was just thinking without answering
-                if not final_response.strip():
-                    logger.warning("LLM response was only thinking content, no final answer provided")
-                    final_response = "I apologize, but I was unable to find sufficient information to answer your question based on the available Memory Alpha records."
-                
-                logger.info(f"Thinking mode: {self.thinking_mode}")
-                logger.info(f"Final cleaned response: {final_response[:200]}...")
-                
-                # Handle thinking mode response processing
-                if self.thinking_mode == ThinkingMode.QUIET:
-                    final_response = self._replace_thinking_tags(final_response)
-                # For DISABLED and VERBOSE modes, the response is already clean
-
                 self._update_history(query, final_response)
                 logger.info("Returning final answer")
                 return final_response
@@ -407,41 +386,6 @@ RESPONSE FORMAT:
         # Fallback if max iterations reached
         logger.warning(f"Max iterations reached for query: {query}")
         return "Query processing exceeded maximum iterations. Please try a simpler question."
-
-    def _clean_response(self, answer: str) -> str:
-        """Clean response by removing ANSI codes and thinking tags."""
-        if not answer:
-            return ""
-            
-        # Remove ANSI codes
-        clean = re.sub(r"\033\[[0-9;]*m", "", answer)
-        # Remove LCARS prefix
-        clean = clean.replace("LCARS: ", "").strip()
-        
-        # Remove thinking tags and their content - multiple patterns
-        # Pattern 1: Complete <think>...</think> blocks
-        clean = re.sub(r'<think>.*?</think>', '', clean, flags=re.DOTALL | re.IGNORECASE)
-        # Pattern 2: Unclosed <think> tags
-        clean = re.sub(r'<think>.*?(?=<think>|</think>|$)', '', clean, flags=re.DOTALL | re.IGNORECASE)
-        # Pattern 3: Any remaining think tags
-        clean = re.sub(r'</?think>', '', clean, flags=re.IGNORECASE)
-        # Pattern 4: Alternative thinking formats
-        clean = re.sub(r'<thinking>.*?</thinking>', '', clean, flags=re.DOTALL | re.IGNORECASE)
-        
-        # Remove extra whitespace and newlines
-        clean = re.sub(r'\n\s*\n', '\n', clean)
-        clean = clean.strip()
-        
-        return clean
-
-    def _replace_thinking_tags(self, answer: str) -> str:
-        """Replace thinking tags with processing text."""
-        clean = re.sub(r"\033\[[0-9;]*m", "", answer).replace("LCARS: ", "").strip()
-        while "<think>" in clean and "</think>" in clean:
-            start = clean.find("<think>")
-            end = clean.find("</think>") + len("</think>")
-            clean = clean[:start] + self.thinking_text + clean[end:]
-        return clean.strip()
 
     def _update_history(self, question: str, answer: str):
         """Update conversation history."""
