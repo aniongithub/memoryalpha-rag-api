@@ -224,15 +224,20 @@ Answer directly in a single paragraph."""
         return formatted_result
 
     def ask(self, query: str, max_tokens: int = 2048, top_k: int = 10, top_p: float = 0.8, temperature: float = 0.3,
-            model: str = os.getenv("DEFAULT_MODEL")) -> str:
+            model: str = os.getenv("DEFAULT_MODEL")) -> Dict[str, Any]:
         """
         Ask a question using the advanced Memory Alpha RAG system with tool use.
+        Returns a dictionary with answer and token usage information.
         """
 
         if not model:
             raise ValueError("model must be provided or set in DEFAULT_MODEL environment variable.")
 
         logger.info(f"Starting tool-enabled RAG for query: {query}")
+        
+        # Initialize token tracking
+        total_input_tokens = 0
+        total_output_tokens = 0
 
         # Define the search tool
         search_tool_definition = {
@@ -317,6 +322,20 @@ RESPONSE FORMAT:
                 logger.info(f"LLM response type: {type(response_message)}")
                 logger.debug(f"Response message content: {response_message.get('content', 'No content')[:200]}...")
                 
+                # Estimate tokens based on content length
+                # Rough estimation: ~4 characters per token for English text
+                content = response_message.get('content', '')
+                estimated_output_tokens = len(content) // 4
+                total_output_tokens += estimated_output_tokens
+                
+                # Estimate input tokens from current message content
+                input_text = ' '.join([msg.get('content', '') for msg in messages])
+                estimated_input_tokens = len(input_text) // 4
+                # Only add the increment from this iteration to avoid double counting
+                total_input_tokens = estimated_input_tokens
+                
+                logger.info(f"Estimated tokens - Input: {estimated_input_tokens}, Output: {estimated_output_tokens}")
+                
                 # Check if the model wants to use a tool
                 tool_calls = getattr(response_message, 'tool_calls', None) or response_message.get('tool_calls')
                 if tool_calls:
@@ -377,15 +396,37 @@ RESPONSE FORMAT:
                 
                 self._update_history(query, final_response)
                 logger.info("Returning final answer")
-                return final_response
+                
+                return {
+                    "answer": final_response,
+                    "token_usage": {
+                        "input_tokens": total_input_tokens,
+                        "output_tokens": total_output_tokens,
+                        "total_tokens": total_input_tokens + total_output_tokens
+                    }
+                }
                 
             except Exception as e:
                 logger.error(f"Chat failed: {e}")
-                return f"Error processing query: {str(e)}"
+                return {
+                    "answer": f"Error processing query: {str(e)}",
+                    "token_usage": {
+                        "input_tokens": total_input_tokens,
+                        "output_tokens": total_output_tokens,
+                        "total_tokens": total_input_tokens + total_output_tokens
+                    }
+                }
 
         # Fallback if max iterations reached
         logger.warning(f"Max iterations reached for query: {query}")
-        return "Query processing exceeded maximum iterations. Please try a simpler question."
+        return {
+            "answer": "Query processing exceeded maximum iterations. Please try a simpler question.",
+            "token_usage": {
+                "input_tokens": total_input_tokens,
+                "output_tokens": total_output_tokens,
+                "total_tokens": total_input_tokens + total_output_tokens
+            }
+        }
 
     def _update_history(self, question: str, answer: str):
         """Update conversation history."""

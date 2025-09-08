@@ -22,10 +22,30 @@ ask_question() {
     local response
     response=$(curl -s \
         "${BASE_URL}/memoryalpha/rag/ask?question=${encoded_question}&thinkingmode=${THINKING_MODE}&max_tokens=${MAX_TOKENS}&top_k=${TOP_K}&top_p=${TOP_P}&temperature=${TEMPERATURE}")
+    
+    # Check if response is valid JSON
+    if ! echo "$response" | jq . >/dev/null 2>&1; then
+        printf "Error: Invalid response received.\n"
+        printf "Raw response: %s\n" "$response"
+        echo "----------------------------------------"
+        return
+    fi
+    
     local answer
-    answer=$(echo "$response" | jq -r '.response // empty')
+    answer=$(echo "$response" | jq -r '.answer // empty')
     if [[ -n "$answer" ]]; then
         printf "%s\n" "$answer"
+        
+        # Display token usage if available
+        local input_tokens output_tokens total_tokens
+        input_tokens=$(echo "$response" | jq -r '.token_usage.input_tokens // empty')
+        output_tokens=$(echo "$response" | jq -r '.token_usage.output_tokens // empty')
+        total_tokens=$(echo "$response" | jq -r '.token_usage.total_tokens // empty')
+        
+        if [[ -n "$input_tokens" && -n "$output_tokens" && -n "$total_tokens" ]]; then
+            echo
+            printf "📊 Token Usage: Input: %s | Output: %s | Total: %s\n" "$input_tokens" "$output_tokens" "$total_tokens"
+        fi
     else
         local error
         error=$(echo "$response" | jq -r '.error // empty')
