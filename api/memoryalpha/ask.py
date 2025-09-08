@@ -24,14 +24,14 @@ def ask_endpoint_post(request: AskRequest):
     Accepts POST requests with JSON payload for cleaner API usage.
     """
     try:
-        answer = rag_instance.ask(
+        result = rag_instance.ask(
             request.question, 
             max_tokens=request.max_tokens,
             top_k=request.top_k,
             top_p=request.top_p,
             temperature=request.temperature
         )
-        return JSONResponse(content={"response": answer})
+        return JSONResponse(content=result)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -48,13 +48,13 @@ def ask_endpoint(
     Now uses advanced tool-enabled RAG by default for better results.
     """
     try:
-        answer = rag_instance.ask(
+        result = rag_instance.ask(
             question, 
             max_tokens=max_tokens,
             top_k=top_k,
             top_p=top_p,
             temperature=temperature
         )
-        return JSONResponse(content={"response": answer})
+        return JSONResponse(content=result)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
