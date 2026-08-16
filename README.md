@@ -11,10 +11,10 @@ This project provides a REST API that enables natural language queries over the 
 The system implements:
 
 - **Retrieval-Augmented Generation (RAG)** for context-aware responses
+- **Single-pass retrieval** (retrieve → cross-encoder rerank → stuff → generate) that works well with small local models — no tool-calling required
 - **Streaming responses** for real-time interaction
 - **Cross-encoder reranking** for improved document relevance
 - **Conversation history** for multi-turn dialogues
-- **Thinking modes** (disabled/quiet/verbose) for different interaction styles
 
 ## Quick Start
 
@@ -54,19 +54,25 @@ The system implements:
 ### API Endpoints
 
 - **Health Check:** `GET /memoryalpha/health`
-- **Streaming Chat:** `GET /memoryalpha/rag/stream`
+- **Ask (full response):** `GET` or `POST /memoryalpha/rag/ask` — returns the complete answer as JSON
+- **Streaming Chat:** `GET` or `POST /memoryalpha/rag/stream` — streams the answer as `text/plain` chunks
+
+> The host port defaults to `8000` but is configurable via `API_PORT` in `.env`
+> (the container always listens on `8000`). Adjust the URLs below to match your `API_PORT`.
 
 #### Example API Usage
 
-* Streaming API
+* Synchronous API (full JSON response)
 ```bash
-curl -N -H "Accept: text/event-stream" \
-  "http://localhost:8000/memoryalpha/rag/stream?question=What%20is%20the%20Enterprise?&thinkingmode=DISABLED&max_tokens=512&top_k=5"
+curl "http://localhost:8000/memoryalpha/rag/ask?question=What%20is%20a%20Transporter?&max_tokens=512&top_k=10&top_p=0.8&temperature=0.3"
 ```
-* Synchronous API
+* Streaming API (plain-text chunks)
 ```bash
-curl -N -H "Accept: text/event-stream"   \
-    "http://localhost:8000/memoryalpha/rag/ask?question=What%20is%20a%20Transporter?&thinkingmode=VERBOSE&max_tokens=512&top_k=5&top_p=0.8&temperature=0.3"
+curl -N "http://localhost:8000/memoryalpha/rag/stream?question=What%20is%20the%20Enterprise?&max_tokens=512&top_k=10"
+```
+* Legacy tool-calling path (opt-in; unreliable with very small models)
+```bash
+curl "http://localhost:8000/memoryalpha/rag/ask?question=What%20is%20a%20Transporter?&use_tools=true"
 ```
 
 ## Configuration
@@ -78,14 +84,14 @@ The system uses the following environment variables (set in `.env`):
 ```env
 # Ollama Configuration
 OLLAMA_URL=http://ollama:11434
-DEFAULT_MODEL=qwen3:0.5b
+DEFAULT_MODEL=qwen3:0.6b-q4_K_M
 
-# Database Configuration  
+# Database Configuration
 DB_PATH=/data/enmemoryalpha_db
-COLLECTION_NAME=memoryalpha
+TEXT_COLLECTION_NAME=memoryalpha_text
 
 # API Configuration
-THINKING_MODE=DISABLED
+API_PORT=8000
 MAX_TOKENS=2048
 TOP_K=10
 ```
@@ -93,11 +99,11 @@ TOP_K=10
 ### Query Parameters
 
 - `question`: Your Star Trek question
-- `thinkingmode`: `DISABLED`, `QUIET`, or `VERBOSE`
 - `max_tokens`: Maximum response length (default: 2048)
 - `top_k`: Number of documents to retrieve (default: 10)
 - `top_p`: Sampling parameter (default: 0.8)
 - `temperature`: Response creativity (default: 0.3)
+- `use_tools`: Use the legacy tool-calling agent loop instead of single-pass RAG (default: `false`; `/ask` only)
 
 ## Development
 
@@ -137,7 +143,7 @@ If you prefer local development without containers:
 3. **Set up Ollama locally:**
    ```bash
    # Install Ollama (see https://ollama.ai)
-   ollama pull qwen3:0.5b
+   ollama pull qwen3:0.6b-q4_K_M
    ```
 4. **Download the MemoryAlpha database:**
    ```bash

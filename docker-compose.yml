@@ -22,12 +22,12 @@ services:
       - .:/workspace/memoryalpha-rag-api
       - model_cache:/root/.cache
     ports:
-      - "8000:8000"  # for REST API
+      - "${API_PORT:-8000}:${APP_PORT:-8000}"  # host API_PORT -> container APP_PORT
     networks:
       - odn
     env_file:
       - .env
-    entrypoint: ["./wait-for-ollama.sh", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]
+    entrypoint: ["./wait-for-ollama.sh", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "${APP_PORT:-8000}", "--log-level", "info"]
 
 volumes:
   ollama_data:
