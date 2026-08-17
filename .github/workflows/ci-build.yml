@@ -29,19 +29,25 @@ jobs:
       run: |
         # Start services in background
         docker compose up -d
-        
+
+        # Host publishes on API_PORT (see .env / docker-compose.yml)
+        set -a; [ -f .env ] && . ./.env; set +a
+        PORT="${API_PORT:-8000}"
+
         # Wait for services to be ready (max 5 minutes)
-        timeout 300 bash -c 'until curl -f http://localhost:8000/memoryalpha/health > /dev/null 2>&1; do sleep 5; echo "Waiting for API..."; done'
-        
+        timeout 300 bash -c "until curl -f http://localhost:${PORT}/memoryalpha/health > /dev/null 2>&1; do sleep 5; echo 'Waiting for API...'; done"
+
         # Verify health endpoint
-        curl -f http://localhost:8000/memoryalpha/health
-        
+        curl -f "http://localhost:${PORT}/memoryalpha/health"
+
         echo "✅ Health check passed"
-        
+
     - name: Test ask endpoint
       run: |
+        set -a; [ -f .env ] && . ./.env; set +a
+        PORT="${API_PORT:-8000}"
         # Test the ask endpoint with a simple query
-        response=$(curl -X POST "http://localhost:8000/memoryalpha/rag/ask"   -H "Content-Type: application/json"   -d '{
+        response=$(curl -X POST "http://localhost:${PORT}/memoryalpha/rag/ask"   -H "Content-Type: application/json"   -d '{
             "question": "What is the color of Vulcan blood?"
           }')
         # Check if response contains expected content
@@ -52,11 +58,13 @@ jobs:
           echo "Response: $response"
           exit 1
         fi
-        
+
     - name: Generate OpenAPI spec
       run: |
+        set -a; [ -f .env ] && . ./.env; set +a
+        PORT="${API_PORT:-8000}"
         # Download OpenAPI spec
-        curl -s http://localhost:8000/openapi.json -o memoryalpha-rag-api-spec.json
+        curl -s "http://localhost:${PORT}/openapi.json" -o memoryalpha-rag-api-spec.json
         cat memoryalpha-rag-api-spec.json
         
     - name: Cleanup

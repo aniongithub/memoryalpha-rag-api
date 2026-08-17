@@ -1,10 +1,14 @@
 #!/bin/bash
 
 # Interactive chat script for MemoryAlpha RAG API
-BASE_URL="http://localhost:8000"
-THINKING_MODE="VERBOSE"
+# Load vars from .env. chat.sh runs *inside* the container, so it targets the
+# container-internal APP_PORT (not the host-published API_PORT).
+if [ -f .env ]; then set -a; . ./.env; set +a; fi
+# Container listens on APP_PORT (default 8000). Set RAG_API_URL to override
+# entirely (e.g. http://localhost:${API_PORT} when running from the host).
+BASE_URL="${RAG_API_URL:-http://localhost:${APP_PORT:-8000}}"
 MAX_TOKENS=2048
-TOP_K=5
+TOP_K=10
 TOP_P=0.8
 TEMPERATURE=0.3
 
@@ -21,7 +25,7 @@ ask_question() {
     echo "----------------------------------------"
     local response
     response=$(curl -s \
-        "${BASE_URL}/memoryalpha/rag/ask?question=${encoded_question}&thinkingmode=${THINKING_MODE}&max_tokens=${MAX_TOKENS}&top_k=${TOP_K}&top_p=${TOP_P}&temperature=${TEMPERATURE}")
+        "${BASE_URL}/memoryalpha/rag/ask?question=${encoded_question}&max_tokens=${MAX_TOKENS}&top_k=${TOP_K}&top_p=${TOP_P}&temperature=${TEMPERATURE}")
     
     # Check if response is valid JSON
     if ! echo "$response" | jq . >/dev/null 2>&1; then

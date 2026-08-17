@@ -33,7 +33,7 @@ def get_user_prompt(context_text: str, query: str) -> str:
 
 INQUIRY: {query}
 
-Accessing Starfleet database records. Provide analysis using ONLY the information in the records above. If the records don't contain the information needed to answer this inquiry, state that the information is not available in current records."""
+Using the records above, answer the inquiry in a single concise paragraph."""
 
 class MemoryAlphaRAG:
     def __init__(self,
@@ -115,10 +115,10 @@ class MemoryAlphaRAG:
         """Search the Memory Alpha database for relevant documents."""
 
         try:
-            # Perform semantic search
+            # Perform semantic search, retrieving extra candidates for reranking.
             results = self.text_collection.query(
                 query_texts=[query],
-                n_results=min(top_k * 2, 50)  # Get more results for reranking
+                n_results=min(top_k * 2, 50)
             )
 
             if not results["documents"] or not results["documents"][0]:
@@ -133,30 +133,24 @@ class MemoryAlphaRAG:
                     "distance": dist
                 })
 
-            # Re-rank using cross-encoder if available
+            # Re-rank the leading candidates with the cross-encoder if available.
             if self.cross_encoder and len(docs) > top_k:
                 logger.info("Re-ranking results with cross-encoder")
-                # Limit to top candidates for re-ranking to avoid performance issues
-                rerank_candidates = docs[:min(len(docs), top_k + 5)]  # Only re-rank top candidates
-                
+                rerank_candidates = docs[:min(len(docs), top_k + 5)]
+
                 # Prepare pairs for cross-encoder with truncated content
-                pairs = []
-                for doc in rerank_candidates:
-                    content = doc['content']
-                    if len(content) > 512:  # Truncate long content for cross-encoder
-                        content = content[:512]
-                    pairs.append([query, content])
-                
+                pairs = [[query, doc['content'][:512]] for doc in rerank_candidates]
+
                 try:
                     scores = self.cross_encoder.predict(pairs)
-                    
+
                     # Sort by cross-encoder scores (higher is better)
                     ranked_docs = sorted(zip(rerank_candidates, scores), key=lambda x: x[1], reverse=True)
                     reranked = [doc for doc, score in ranked_docs]
-                    
-                    # Replace original docs with re-ranked ones
+
+                    # Replace the reranked head, keep the remaining tail order.
                     docs = reranked + docs[len(rerank_candidates):]
-                    logger.info(f"Cross-encoder re-ranking completed, top score: {scores[0]:.4f}")
+                    logger.info(f"Cross-encoder re-ranking completed, top score: {ranked_docs[0][1]:.4f}")
                 except Exception as e:
                     logger.warning(f"Cross-encoder re-ranking failed: {e}, using original ranking")
                     # Continue with original docs if re-ranking fails
@@ -169,18 +163,15 @@ class MemoryAlphaRAG:
     def build_prompt(self, query: str, docs: List[Dict[str, Any]]) -> tuple[str, str]:
         """Build the prompt with retrieved documents."""
 
-        system_prompt = """You are an LCARS computer system with access to Star Trek Memory Alpha records.
+        system_prompt = """You are the LCARS computer of a Federation starship. Answer the inquiry using the Star Trek Memory Alpha records provided in the message.
 
-CRITICAL INSTRUCTIONS:
-- You MUST answer ONLY using information from the provided records
-- If the records don't contain relevant information, say "I don't have information about that in my records"
-- DO NOT make up information, invent characters, or hallucinate details
-- DO NOT use external knowledge about Star Trek - only use the provided records
-- AVOID mirror universe references unless specifically asked about it
-- If asked about something not in the records, be honest about the limitation
-- Stay in character as an LCARS computer system at all times
-
-Answer directly in a single paragraph."""
+- Treat the records below as your source of truth and summarize what they say to answer the inquiry.
+- Only if the records are truly unrelated to the inquiry, reply: "I don't have information about that in my records."
+- Do not add facts that are not supported by the records, and do not speculate.
+- Report in-universe facts only. Never mention actors, episodes, writers, production, or that Star Trek is fictional.
+- Ignore mirror-universe, alternate-timeline, novel, or comic material unless the inquiry is specifically about it.
+- Do not mention "documents", "records", "context", or the search process in your answer.
+- Answer in a single concise paragraph, in-character as the LCARS computer."""
 
         if not docs:
             context_text = ""
@@ -223,11 +214,119 @@ Answer directly in a single paragraph."""
         logger.info(f"Formatted search result length: {len(formatted_result)}")
         return formatted_result
 
+    def _clean_answer(self, text: str) -> str:
+        """Strip ANSI codes and stray LCARS prefixes from a model response."""
+        text = re.sub(r"\033\[[0-9;]*m", "", text)
+        return text.replace("LCARS: ", "").strip()
+
     def ask(self, query: str, max_tokens: int = 2048, top_k: int = 10, top_p: float = 0.8, temperature: float = 0.3,
+            model: str = os.getenv("DEFAULT_MODEL"), use_tools: bool = False) -> Dict[str, Any]:
+        """
+        Answer a question using single-pass RAG: retrieve -> rerank -> stuff -> generate.
+
+        This is the default path and works well with small local models because it never
+        relies on the model to emit tool calls. Set use_tools=True to fall back to the
+        legacy tool-calling agent loop (ask_with_tools).
+        Returns a dictionary with answer and token usage information.
+        """
+        if not model:
+            raise ValueError("model must be provided or set in DEFAULT_MODEL environment variable.")
+
+        if use_tools:
+            return self.ask_with_tools(query, max_tokens=max_tokens, top_k=top_k,
+                                       top_p=top_p, temperature=temperature, model=model)
+
+        logger.info(f"Starting single-pass RAG for query: {query}")
+
+        # Retrieve + rerank using the raw user question (no model-invented keywords).
+        docs = self.search(query, top_k=top_k)
+        system_prompt, user_prompt = self.build_prompt(query, docs)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        try:
+            result = self.ollama_client.chat(
+                model=model,
+                messages=messages,
+                stream=False,
+                think=False,
+                options={"temperature": temperature, "top_p": top_p, "num_predict": max_tokens},
+            )
+        except Exception as e:
+            logger.error(f"Chat failed: {e}")
+            return {
+                "answer": f"Error processing query: {str(e)}",
+                "token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            }
+
+        answer = self._clean_answer((result.get("message") or {}).get("content", "") or "")
+        if not answer:
+            answer = "I apologize, but I was unable to generate a response."
+
+        # Real token counts reported by Ollama (not character estimates).
+        input_tokens = int(result.get("prompt_eval_count", 0) or 0)
+        output_tokens = int(result.get("eval_count", 0) or 0)
+
+        self._update_history(query, answer)
+        return {
+            "answer": answer,
+            "token_usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            },
+        }
+
+    def ask_stream(self, query: str, max_tokens: int = 2048, top_k: int = 10, top_p: float = 0.8,
+                   temperature: float = 0.3, model: str = os.getenv("DEFAULT_MODEL")):
+        """
+        Single-pass RAG that streams the answer as it is generated.
+
+        Yields plain-text chunks. Retrieval and prompt construction are identical to
+        ask(); only the generation step is streamed.
+        """
+        if not model:
+            raise ValueError("model must be provided or set in DEFAULT_MODEL environment variable.")
+
+        logger.info(f"Starting streaming single-pass RAG for query: {query}")
+
+        docs = self.search(query, top_k=top_k)
+        system_prompt, user_prompt = self.build_prompt(query, docs)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        collected: List[str] = []
+        try:
+            for chunk in self.ollama_client.chat(
+                model=model,
+                messages=messages,
+                stream=True,
+                think=False,
+                options={"temperature": temperature, "top_p": top_p, "num_predict": max_tokens},
+            ):
+                piece = (chunk.get("message") or {}).get("content", "")
+                if piece:
+                    collected.append(piece)
+                    yield piece
+        except Exception as e:
+            logger.error(f"Streaming chat failed: {e}")
+            yield f"\n[Error processing query: {str(e)}]"
+            return
+
+        answer = self._clean_answer("".join(collected))
+        if answer:
+            self._update_history(query, answer)
+
+    def ask_with_tools(self, query: str, max_tokens: int = 2048, top_k: int = 10, top_p: float = 0.8, temperature: float = 0.3,
             model: str = os.getenv("DEFAULT_MODEL")) -> Dict[str, Any]:
         """
-        Ask a question using the advanced Memory Alpha RAG system with tool use.
-        Returns a dictionary with answer and token usage information.
+        Legacy: answer a question using the tool-calling agent loop.
+        Kept for comparison; unreliable with very small local models. Returns a dict
+        with answer and (estimated) token usage information.
         """
 
         if not model:

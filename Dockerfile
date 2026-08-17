@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r /tmp/pip-tmp/requirements.txt \
 
 WORKDIR /data
 
-ARG MEMORYALPHA_DB_RELEASE=v0.5.0
+ARG MEMORYALPHA_DB_RELEASE=v0.5.2
 RUN wget https://github.com/aniongithub/memoryalpha-vectordb/releases/download/${MEMORYALPHA_DB_RELEASE}/enmemoryalpha_db.tar.gz &&\
     tar -xzf enmemoryalpha_db.tar.gz &&\
     rm enmemoryalpha_db.tar.gz &&\
