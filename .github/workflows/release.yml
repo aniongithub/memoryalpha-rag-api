@@ -5,7 +5,7 @@ on:
     types: [published]
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -69,5 +69,7 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         files: memoryalpha-rag-api-spec.json
-      env:
-        GITHUB_TOKEN: ${{ secrets.MEMORYALPHA_RAG_API_MODIFY_RELEASE_TOKEN }}
+        # Must be passed as the `token` input; a token here overrides the
+        # GITHUB_TOKEN env, whereas the input's default (github.token) would
+        # otherwise win and lacks release-write permission.
+        token: ${{ secrets.MEMORYALPHA_RAG_API_MODIFY_RELEASE_TOKEN }}
